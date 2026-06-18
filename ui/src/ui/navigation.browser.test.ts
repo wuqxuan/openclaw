@@ -827,6 +827,48 @@ describe("control UI routing", () => {
     expect(refreshed.settings.token).toBe("other-token");
   });
 
+  it("resets first-connect state when gateway identity settings change", async () => {
+    const app = mountApp("/ui/overview");
+    await app.updateComplete;
+    app.hasConnectedGateway = true;
+
+    app.applySettings({
+      ...app.settings,
+      token: "new-token",
+    });
+    await app.updateComplete;
+
+    expect(app.hasConnectedGateway).toBe(false);
+  });
+
+  it("resets first-connect state when the gateway password changes", async () => {
+    const app = mountApp("/ui/overview");
+    await app.updateComplete;
+    app.hasConnectedGateway = true;
+
+    app.setGatewayPassword("new-password");
+    await app.updateComplete;
+
+    expect(app.hasConnectedGateway).toBe(false);
+  });
+
+  it("routes overview gateway password edits through first-connect reset", async () => {
+    const app = mountApp("/ui/overview");
+    await app.updateComplete;
+    app.hasConnectedGateway = true;
+
+    const passwordField = Array.from(app.querySelectorAll("label.field")).find((label) =>
+      label.textContent?.includes("Password"),
+    );
+    expect(passwordField).toBeInstanceOf(HTMLLabelElement);
+    const passwordInput = expectElement(passwordField!, "input", HTMLInputElement);
+    passwordInput.value = "new-password";
+    passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await app.updateComplete;
+
+    expect(app.hasConnectedGateway).toBe(false);
+  });
+
   it("keeps a hash token pending until the gateway URL change is confirmed", async () => {
     const app = mountApp(
       "/ui/overview?gatewayUrl=wss://other-gateway.example/openclaw#token=abc123",
@@ -835,9 +877,11 @@ describe("control UI routing", () => {
 
     expect(app.settings.gatewayUrl).not.toBe("wss://other-gateway.example/openclaw");
     expect(app.settings.token).toBe("");
+    app.hasConnectedGateway = true;
 
     await confirmPendingGatewayChange(app);
 
     expectConfirmedGatewayChange(app);
+    expect(app.hasConnectedGateway).toBe(false);
   });
 });

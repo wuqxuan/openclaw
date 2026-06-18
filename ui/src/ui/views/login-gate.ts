@@ -344,7 +344,7 @@ export function renderLoginGate(state: AppViewState) {
                 .value=${state.password}
                 @input=${(e: Event) => {
                   const v = (e.target as HTMLInputElement).value;
-                  state.password = v;
+                  state.setGatewayPassword(v);
                 }}
                 placeholder="${t("login.passwordPlaceholder")}"
                 @keydown=${(e: KeyboardEvent) => {

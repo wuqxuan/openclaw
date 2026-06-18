@@ -166,6 +166,8 @@ function createHost(): TestGatewayHost {
     clientInstanceId: "instance-test",
     client: null,
     connected: false,
+    hasConnectedGateway: false,
+    gatewayDeviceTokenRetryPending: false,
     hello: null,
     lastError: null,
     lastErrorCode: null,
@@ -1156,6 +1158,7 @@ describe("connectGateway", () => {
 
     client.emitHello();
 
+    expect(host.hasConnectedGateway).toBe(true);
     await vi.waitFor(() => expect(loadControlUiBootstrapConfigMock).toHaveBeenCalledTimes(1));
     expect(loadControlUiBootstrapConfigMock).toHaveBeenCalledWith(host, { applyIdentity: false });
   });

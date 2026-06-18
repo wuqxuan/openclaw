@@ -78,15 +78,15 @@ import { normalizeAssistantIdentity } from "./assistant-identity.ts";
 import { restoreChatComposerState } from "./chat/composer-persistence.ts";
 import { exportChatMarkdown } from "./chat/export.ts";
 import {
+  reconcileRealtimeTalkCatalogSelection,
+  type RealtimeTalkCatalogProvider,
+} from "./chat/realtime-talk-catalog.ts";
+import {
   createRealtimeTalkConversationState,
   updateRealtimeTalkConversation,
   type RealtimeTalkConversationEntry,
   type RealtimeTalkConversationState,
 } from "./chat/realtime-talk-conversation.ts";
-import {
-  reconcileRealtimeTalkCatalogSelection,
-  type RealtimeTalkCatalogProvider,
-} from "./chat/realtime-talk-catalog.ts";
 import {
   RealtimeTalkSession,
   type RealtimeTalkLaunchOptions,
@@ -223,6 +223,8 @@ export class OpenClawApp extends LitElement {
   @state() tab: Tab = "chat";
   @state() onboarding = resolveOnboardingMode();
   @state() connected = false;
+  @state() hasConnectedGateway = false;
+  @state() gatewayDeviceTokenRetryPending = false;
   @state() theme: ThemeName = this.settings.theme ?? "claw";
   @state() themeMode: ThemeMode = this.settings.themeMode ?? "system";
   @state() themeResolved: ResolvedTheme = "dark";
@@ -983,6 +985,9 @@ export class OpenClawApp extends LitElement {
   }
 
   applySettings(next: UiSettings) {
+    if (next.gatewayUrl !== this.settings.gatewayUrl || next.token !== this.settings.token) {
+      this.hasConnectedGateway = false;
+    }
     applySettingsInternal(this as unknown as Parameters<typeof applySettingsInternal>[0], next);
   }
 
@@ -1121,6 +1126,13 @@ export class OpenClawApp extends LitElement {
       textScale: value as typeof this.settings.textScale,
     });
     this.requestUpdate();
+  }
+
+  setGatewayPassword(value: string) {
+    if (value !== this.password) {
+      this.hasConnectedGateway = false;
+    }
+    this.password = value;
   }
 
   announceSessionSwitch(sessionKey: string, label: string) {
@@ -1431,7 +1443,7 @@ export class OpenClawApp extends LitElement {
     const nextToken = this.pendingGatewayToken?.trim() || "";
     this.pendingGatewayUrl = null;
     this.pendingGatewayToken = null;
-    applySettingsInternal(this as unknown as Parameters<typeof applySettingsInternal>[0], {
+    this.applySettings({
       ...this.settings,
       gatewayUrl: nextGatewayUrl,
       token: nextToken,

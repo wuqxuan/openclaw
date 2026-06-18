@@ -109,6 +109,8 @@ type GatewayHost = {
   clientInstanceId: string;
   client: GatewayBrowserClient | null;
   connected: boolean;
+  hasConnectedGateway: boolean;
+  gatewayDeviceTokenRetryPending: boolean;
   hello: GatewayHelloOk | null;
   lastError: string | null;
   lastErrorCode: string | null;
@@ -777,6 +779,7 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
   host.chatError = null;
   host.hello = null;
   host.connected = false;
+  host.gatewayDeviceTokenRetryPending = false;
   if (reconnectReason === "seq-gap") {
     host.execApprovalQueue = pruneExecApprovalQueue(host.execApprovalQueue);
     clearPendingQueueItemsForRun(
@@ -808,6 +811,8 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
       }
       shutdownHost.pendingShutdownMessage = null;
       host.connected = true;
+      host.hasConnectedGateway = true;
+      host.gatewayDeviceTokenRetryPending = false;
       host.lastError = null;
       host.lastErrorCode = null;
       host.chatError = null;
@@ -906,11 +911,12 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
         void verifyPendingUpdateVersion(host, client);
       });
     },
-    onClose: ({ code, reason, error }) => {
+    onClose: ({ code, reason, error, deviceTokenRetryPending }) => {
       if (host.client !== client) {
         return;
       }
       host.connected = false;
+      host.gatewayDeviceTokenRetryPending = deviceTokenRetryPending === true;
       markQueuedChatSendsWaitingForReconnect(
         host as unknown as Parameters<typeof markQueuedChatSendsWaitingForReconnect>[0],
       );

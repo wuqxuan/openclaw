@@ -105,22 +105,13 @@ function shouldContinueReconnectForPairingRequired(details: unknown): boolean {
   );
 }
 
-/**
- * Auth errors that won't resolve without user action — don't auto-reconnect.
- *
- * NOTE: AUTH_TOKEN_MISMATCH is intentionally NOT included here because the
- * browser client supports a bounded one-time retry with a cached device token
- * when the endpoint is trusted. Reconnect suppression for mismatch is handled
- * with client state (after retry budget is exhausted).
- */
-export function isNonRecoverableAuthError(error: GatewayErrorInfo | undefined): boolean {
-  if (!error) {
-    return false;
-  }
-  const code = resolveGatewayErrorDetailCode(error);
+export function isNonRecoverableAuthErrorCode(
+  code: string | null | undefined,
+  details?: unknown,
+): boolean {
   if (
     code === ConnectErrorDetailCodes.PAIRING_REQUIRED &&
-    shouldContinueReconnectForPairingRequired(error.details)
+    shouldContinueReconnectForPairingRequired(details)
   ) {
     return false;
   }
@@ -136,6 +127,22 @@ export function isNonRecoverableAuthError(error: GatewayErrorInfo | undefined): 
     code === ConnectErrorDetailCodes.CONTROL_UI_DEVICE_IDENTITY_REQUIRED ||
     code === ConnectErrorDetailCodes.DEVICE_IDENTITY_REQUIRED
   );
+}
+
+/**
+ * Auth errors that won't resolve without user action — don't auto-reconnect.
+ *
+ * NOTE: AUTH_TOKEN_MISMATCH is intentionally NOT included here because the
+ * browser client supports a bounded one-time retry with a cached device token
+ * when the endpoint is trusted. Reconnect suppression for mismatch is handled
+ * with client state (after retry budget is exhausted).
+ */
+export function isNonRecoverableAuthError(error: GatewayErrorInfo | undefined): boolean {
+  if (!error) {
+    return false;
+  }
+  const code = resolveGatewayErrorDetailCode(error);
+  return isNonRecoverableAuthErrorCode(code, error.details);
 }
 
 function isLoopbackIPv4Host(host: string): boolean {
@@ -281,7 +288,12 @@ export type GatewayBrowserClientOptions = {
   instanceId?: string;
   onHello?: (hello: GatewayHelloOk) => void;
   onEvent?: (evt: GatewayEventFrame) => void;
-  onClose?: (info: { code: number; reason: string; error?: GatewayErrorInfo }) => void;
+  onClose?: (info: {
+    code: number;
+    reason: string;
+    error?: GatewayErrorInfo;
+    deviceTokenRetryPending?: boolean;
+  }) => void;
   onGap?: (info: { expected: number; received: number }) => void;
   onRequestTiming?: (timing: GatewayRequestTiming) => void;
   onConnectTiming?: (timing: GatewayConnectTiming) => void;
@@ -561,11 +573,19 @@ export class GatewayBrowserClient {
         this.scheduleReconnect();
         return;
       }
-      this.flushPending(new Error(`gateway closed (${ev.code}): ${reason}`));
-      this.opts.onClose?.({ code: ev.code, reason, error: connectError });
       const connectErrorCode = resolveGatewayErrorDetailCode(connectError);
+      const deviceTokenRetryPending =
+        connectErrorCode === ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH &&
+        this.pendingDeviceTokenRetry;
+      this.flushPending(new Error(`gateway closed (${ev.code}): ${reason}`));
+      this.opts.onClose?.({
+        code: ev.code,
+        reason,
+        error: connectError,
+        deviceTokenRetryPending,
+      });
       if (connectErrorCode === ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH) {
-        if (this.pendingDeviceTokenRetry) {
+        if (deviceTokenRetryPending) {
           this.scheduleReconnect();
         }
         return;

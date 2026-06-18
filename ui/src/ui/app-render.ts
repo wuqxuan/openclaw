@@ -2,6 +2,7 @@
 import { html, nothing } from "lit";
 import { guard } from "lit/directives/guard.js";
 import { styleMap } from "lit/directives/style-map.js";
+import { ConnectErrorDetailCodes } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import { i18n, t } from "../i18n/index.ts";
 import { getSafeLocalStorage } from "../local-storage.ts";
 import {
@@ -158,6 +159,7 @@ import { getCronJobPayload } from "./cron-payload.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
 import { formatTimeMs } from "./format.ts";
 import { formatRelativeTimestamp } from "./format.ts";
+import { isNonRecoverableAuthErrorCode } from "./gateway.ts";
 import { icons } from "./icons.ts";
 import { createLazyView, renderLazyView } from "./lazy-view.ts";
 import {
@@ -217,6 +219,11 @@ import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderLoginGate } from "./views/login-gate.ts";
 import { renderMcp } from "./views/mcp.ts";
+import {
+  resolveAuthHintKind,
+  resolvePairingHint,
+  shouldShowInsecureContextHint,
+} from "./views/overview-hints.ts";
 import { renderOverview } from "./views/overview.ts";
 
 let pendingUpdate: (() => void) | undefined;
@@ -259,6 +266,46 @@ function setSkillWorkshopUseCurrentChatForRevisions(state: AppViewState, enabled
   } catch {
     // Preference persistence is optional; the active toggle still controls this handoff.
   }
+}
+
+function shouldRenderLoginGate(state: AppViewState): boolean {
+  if (state.connected) {
+    return false;
+  }
+  if (!state.hasConnectedGateway) {
+    return true;
+  }
+  if (!state.lastError) {
+    return false;
+  }
+  if (state.gatewayDeviceTokenRetryPending) {
+    return false;
+  }
+
+  if (resolvePairingHint(false, state.lastError, state.lastErrorCode)) {
+    return true;
+  }
+  if (
+    resolveAuthHintKind({
+      connected: false,
+      lastError: state.lastError,
+      lastErrorCode: state.lastErrorCode,
+      hasToken: Boolean(state.settings.token?.trim()),
+      hasPassword: Boolean(state.password?.trim()),
+    })
+  ) {
+    return true;
+  }
+  if (shouldShowInsecureContextHint(false, state.lastError, state.lastErrorCode)) {
+    return true;
+  }
+  if (isNonRecoverableAuthErrorCode(state.lastErrorCode)) {
+    return true;
+  }
+  if (state.lastErrorCode === ConnectErrorDetailCodes.CONTROL_UI_ORIGIN_NOT_ALLOWED) {
+    return true;
+  }
+  return state.lastError.toLowerCase().includes("protocol mismatch");
 }
 
 function setSkillWorkshopMode(state: AppViewState, mode: "board" | "today"): void {
@@ -1386,9 +1433,10 @@ export function renderApp(state: AppViewState) {
       : undefined;
   pendingUpdate = requestHostUpdate;
 
-  // Gate: require successful gateway connection before showing the dashboard.
+  // Gate only first-connect and explicit auth/config failures; transient reconnects
+  // keep the mounted dashboard visible so tab refocus does not flash credentials.
   // The gateway URL confirmation overlay is always rendered so URL-param flows still work.
-  if (!state.connected) {
+  if (shouldRenderLoginGate(state)) {
     return html` ${renderLoginGate(state)} ${renderGatewayUrlConfirmation(state)} `;
   }
 
@@ -2761,7 +2809,7 @@ export function renderApp(state: AppViewState) {
               showGatewayToken: state.overviewShowGatewayToken,
               showGatewayPassword: state.overviewShowGatewayPassword,
               onSettingsChange: (next) => state.applySettings(next),
-              onPasswordChange: (next) => (state.password = next),
+              onPasswordChange: (next) => state.setGatewayPassword(next),
               onSessionKeyChange: (next) => {
                 switchChatSession(state, next);
               },

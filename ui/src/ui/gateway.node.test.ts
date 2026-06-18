@@ -309,9 +309,11 @@ async function expectRetriedDeviceTokenConnect(params: {
   token: string;
   retryNonce?: string;
 }) {
+  const onClose = vi.fn();
   const client = new GatewayBrowserClient({
     url: params.url,
     token: params.token,
+    onClose,
   });
   const { ws: firstWs, connectFrame: firstConnect } = await startConnect(client);
   expect(firstConnect.params?.auth?.token).toBe(params.token);
@@ -320,6 +322,18 @@ async function expectRetriedDeviceTokenConnect(params: {
   emitRetryableTokenMismatch(firstWs, firstConnect.id);
   await expectSocketClosed(firstWs);
   firstWs.emitClose(4008, "connect failed");
+  expect(onClose).toHaveBeenCalledWith({
+    code: 4008,
+    reason: "connect failed",
+    error: {
+      code: "INVALID_REQUEST",
+      message: "unauthorized",
+      details: { code: "AUTH_TOKEN_MISMATCH", canRetryWithDeviceToken: true },
+      retryable: false,
+      retryAfterMs: undefined,
+    },
+    deviceTokenRetryPending: true,
+  });
 
   await vi.advanceTimersByTimeAsync(800);
   const secondWs = getLatestWebSocket();
@@ -850,6 +864,7 @@ describe("GatewayBrowserClient", () => {
           retryable: false,
           retryAfterMs: undefined,
         },
+        deviceTokenRetryPending: false,
       });
     } finally {
       client.stop();
@@ -947,6 +962,7 @@ describe("GatewayBrowserClient", () => {
         retryable: false,
         retryAfterMs: undefined,
       },
+      deviceTokenRetryPending: false,
     });
 
     client.stop();

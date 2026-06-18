@@ -2,6 +2,7 @@
 
 import { html, render } from "lit";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ConnectErrorDetailCodes } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import { i18n } from "../i18n/index.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import type { ChatProps } from "./views/chat.ts";
@@ -81,6 +82,8 @@ function createState(overrides: Partial<AppViewState> = {}): AppViewState {
     onboarding: false,
     basePath: "",
     connected: true,
+    hasConnectedGateway: true,
+    gatewayDeviceTokenRetryPending: false,
     theme: "claw",
     themeMode: "dark",
     themeResolved: "dark",
@@ -220,6 +223,7 @@ function createState(overrides: Partial<AppViewState> = {}): AppViewState {
     clearCustomTheme: vi.fn(),
     setBorderRadius: vi.fn(),
     setTextScale: vi.fn(),
+    setGatewayPassword: vi.fn(),
     applySettings: vi.fn(),
     applyLocalUserIdentity: vi.fn(),
     loadOverview: vi.fn(),
@@ -448,6 +452,86 @@ describe("renderApp assistant avatar routing", () => {
     );
 
     expect(chatProps.current?.error).toBe("gateway disconnected");
+  });
+
+  it("keeps the dashboard mounted during transient reconnects after a successful connection", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderApp(
+        createState({
+          tab: "chat",
+          connected: false,
+          hasConnectedGateway: true,
+          lastError: "disconnected (1006): no reason",
+        } as Partial<AppViewState>),
+      ),
+      container,
+    );
+
+    expect(container.querySelector(".shell")).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector(".login-gate")).toBeNull();
+    expect(chatProps.current?.error).toBe("disconnected (1006): no reason");
+  });
+
+  it("shows the login gate after a successful connection when auth is rejected", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderApp(
+        createState({
+          connected: false,
+          hasConnectedGateway: true,
+          lastError: "gateway token mismatch",
+          lastErrorCode: "AUTH_TOKEN_MISMATCH",
+        } as Partial<AppViewState>),
+      ),
+      container,
+    );
+
+    expect(container.querySelector(".login-gate")).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector(".shell")).toBeNull();
+  });
+
+  it("keeps the dashboard mounted during automatic device token retries", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderApp(
+        createState({
+          tab: "chat",
+          connected: false,
+          hasConnectedGateway: true,
+          gatewayDeviceTokenRetryPending: true,
+          lastError: "gateway token mismatch",
+          lastErrorCode: ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH,
+        } as Partial<AppViewState>),
+      ),
+      container,
+    );
+
+    expect(container.querySelector(".shell")).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector(".login-gate")).toBeNull();
+    expect(chatProps.current?.error).toBe("gateway token mismatch");
+  });
+
+  it("shows the login gate after a successful connection when auth scope must change", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderApp(
+        createState({
+          connected: false,
+          hasConnectedGateway: true,
+          lastError: "requested scopes are not approved",
+          lastErrorCode: ConnectErrorDetailCodes.AUTH_SCOPE_MISMATCH,
+        } as Partial<AppViewState>),
+      ),
+      container,
+    );
+
+    expect(container.querySelector(".login-gate")).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector(".shell")).toBeNull();
   });
 
   it("does not rebuild chat composer controls for draft-only rerenders", () => {
