@@ -106,6 +106,48 @@ describe("registerWorkboardCli", () => {
     expect(showOutput).toContain("[redacted]");
   });
 
+  it("hides archived cards from list output by default", async () => {
+    const store = new WorkboardStore(createMemoryStore());
+    await store.create({ title: "Active card" });
+    const archived = await store.create({ title: "Archived card" });
+    await store.archive(archived.id, true);
+    const program = createProgram(store);
+
+    const textOutput = await captureStdout(async () => {
+      await program.parseAsync(["workboard", "list"], { from: "user" });
+    });
+    const jsonOutput = await captureStdout(async () => {
+      await program.parseAsync(["workboard", "list", "--json"], { from: "user" });
+    });
+
+    expect(textOutput).toContain("Active card");
+    expect(textOutput).not.toContain("Archived card");
+    expect(jsonOutput).toContain("Active card");
+    expect(jsonOutput).not.toContain("Archived card");
+  });
+
+  it("includes archived cards when list uses include-archived", async () => {
+    const store = new WorkboardStore(createMemoryStore());
+    await store.create({ title: "Active card" });
+    const archived = await store.create({ title: "Archived card" });
+    await store.archive(archived.id, true);
+    const program = createProgram(store);
+
+    const textOutput = await captureStdout(async () => {
+      await program.parseAsync(["workboard", "list", "--include-archived"], { from: "user" });
+    });
+    const jsonOutput = await captureStdout(async () => {
+      await program.parseAsync(["workboard", "list", "--include-archived", "--json"], {
+        from: "user",
+      });
+    });
+
+    expect(textOutput).toContain("Active card");
+    expect(textOutput).toContain("Archived card");
+    expect(jsonOutput).toContain("Active card");
+    expect(jsonOutput).toContain("Archived card");
+  });
+
   it("does not fall back to local dispatch for explicit gateway targets", async () => {
     const store = new WorkboardStore(createMemoryStore());
     const card = await store.create({ title: "Remote target", status: "ready" });

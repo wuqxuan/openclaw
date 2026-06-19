@@ -22,7 +22,7 @@ openclaw gateway restart
 ## Usage
 
 ```bash
-openclaw workboard list [--board <id>] [--status <status>] [--json]
+openclaw workboard list [--board <id>] [--status <status>] [--include-archived] [--json]
 openclaw workboard create <title...> [--notes <text>] [--status <status>] [--priority <priority>] [--agent <id>] [--board <id>] [--labels <items>] [--json]
 openclaw workboard show <id> [--json]
 openclaw workboard dispatch [--url <url>] [--token <token>] [--timeout <ms>] [--json]
@@ -37,6 +37,7 @@ unambiguous prefix when a command accepts a card id.
 ```bash
 openclaw workboard list
 openclaw workboard list --board default --status ready
+openclaw workboard list --include-archived
 openclaw workboard list --json
 ```
 
@@ -47,14 +48,16 @@ Text output is compact:
 ```
 
 Columns are id prefix, status, priority, board id, optional agent id, and title.
+Archived cards are hidden by default; pass `--include-archived` to show them.
 
 Flags:
 
-| Flag                | Purpose                                  |
-| ------------------- | ---------------------------------------- |
-| `--board <id>`      | Limit results to one board namespace     |
-| `--status <status>` | Limit results to one Workboard status    |
-| `--json`            | Print the full card list as machine JSON |
+| Flag                 | Purpose                                  |
+| -------------------- | ---------------------------------------- |
+| `--board <id>`       | Limit results to one board namespace     |
+| `--status <status>`  | Limit results to one Workboard status    |
+| `--include-archived` | Include archived cards                   |
+| `--json`             | Print the full card list as machine JSON |
 
 ## `create`
 
