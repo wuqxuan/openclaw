@@ -1,7 +1,11 @@
 // Discord plugin module implements message handler.process behavior.
 import path from "node:path";
 import { MessageFlags } from "discord-api-types/v10";
-import { resolveAckReaction, resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
+import {
+  formatReasoningMessage,
+  resolveAckReaction,
+  resolveHumanDelayConfig,
+} from "openclaw/plugin-sdk/agent-runtime";
 import {
   createStatusReactionController,
   DEFAULT_TIMING,
@@ -113,10 +117,23 @@ function isFallbackOnlyToolWarningFinal(payload: ReplyPayload): boolean {
   return !resolveSendableOutboundReplyParts(payload).hasMedia;
 }
 
-type DiscordReplySkipReason =
-  | "aborted before delivery"
-  | "reasoning payload"
-  | "internal-only payload";
+function hasFormattedReasoningPrefix(text: string): boolean {
+  return /^Thinking\.{0,3}(?=\s*_|\s*$)/u.test(text.trimStart());
+}
+
+function formatDiscordReasoningPayload(payload: ReplyPayload): ReplyPayload {
+  if (payload.isReasoning !== true || typeof payload.text !== "string") {
+    return payload;
+  }
+  const text = payload.text.trim();
+  if (!text || hasFormattedReasoningPrefix(text)) {
+    return payload;
+  }
+  const reasoningText = text.replace(/^Reasoning:\s*/iu, "").trim();
+  return { ...payload, text: formatReasoningMessage(reasoningText || text) };
+}
+
+type DiscordReplySkipReason = "aborted before delivery" | "internal-only payload";
 
 export function formatDiscordReplySkip(params: {
   kind: "tool" | "block" | "final";
@@ -609,25 +626,17 @@ async function processDiscordMessageInner(
       );
       return null;
     }
-    if (payload.isReasoning) {
-      // Reasoning/thinking payloads should not be delivered to Discord.
-      logVerbose(
-        formatDiscordReplySkip({
-          kind: info.kind,
-          reason: "reasoning payload",
-          target: deliverTarget,
-          sessionKey: ctxPayload.SessionKey,
-        }),
-      );
-      return null;
-    }
     if (draftPreview.draftStream && draftPreview.isProgressMode && info.kind === "block") {
       const reply = resolveSendableOutboundReplyParts(payload);
-      if (!reply.hasMedia && !payload.isError) {
+      if (!payload.isReasoning && !reply.hasMedia && !payload.isError) {
         return null;
       }
     }
-    if (info.kind === "final" && !isFallbackOnlyToolWarningFinal(payload)) {
+    if (
+      info.kind === "final" &&
+      payload.isReasoning !== true &&
+      !isFallbackOnlyToolWarningFinal(payload)
+    ) {
       draftPreview.markFinalReplyStarted();
     }
     return payload;
@@ -652,18 +661,7 @@ async function processDiscordMessageInner(
       return { visibleReplySent: false };
     }
     const isFinal = info.kind === "final";
-    if (payload.isReasoning) {
-      // Reasoning/thinking payloads should not be delivered to Discord.
-      logVerbose(
-        formatDiscordReplySkip({
-          kind: info.kind,
-          reason: "reasoning payload",
-          target: deliverTarget,
-          sessionKey: ctxPayload.SessionKey,
-        }),
-      );
-      return { visibleReplySent: false };
-    }
+    const isReasoningInputPayload = payload.isReasoning === true;
     if (
       isFinal &&
       !options?.allowFallbackOnlyToolWarning &&
@@ -677,17 +675,19 @@ async function processDiscordMessageInner(
       }
       return { visibleReplySent: false };
     }
-    if (isFinal) {
+    if (isFinal && !isReasoningInputPayload) {
       draftPreview.markFinalReplyStarted();
     }
     const finalText =
-      isFinal && typeof payload.text === "string"
+      isFinal && !isReasoningInputPayload && typeof payload.text === "string"
         ? await resolveTranscriptBackedChannelFinalText({
             finalText: payload.text,
             resolveCandidateText: resolveCurrentTurnTranscriptFinalText,
           })
         : payload.text;
-    const effectivePayload = finalText !== payload.text ? { ...payload, text: finalText } : payload;
+    const effectivePayload = formatDiscordReasoningPayload(
+      finalText !== payload.text ? { ...payload, text: finalText } : payload,
+    );
     const [deliverablePayload] = sanitizeDiscordFrontChannelReplyPayloads([effectivePayload], {
       kind: info.kind,
     });
@@ -702,16 +702,18 @@ async function processDiscordMessageInner(
       );
       return { visibleReplySent: false };
     }
+    const isReasoningPayload = deliverablePayload.isReasoning === true;
     const draftStream = draftPreview.draftStream;
     if (draftStream && draftPreview.isProgressMode && info.kind === "block") {
       const reply = resolveSendableOutboundReplyParts(deliverablePayload);
-      if (!reply.hasMedia && !deliverablePayload.isError) {
+      if (!isReasoningPayload && !reply.hasMedia && !deliverablePayload.isError) {
         return { visibleReplySent: false };
       }
     }
     const shouldFinalizeDraftPreview =
       draftStream &&
       isFinal &&
+      !isReasoningPayload &&
       (!draftPreview.isProgressMode || draftPreview.hasProgressDraftStarted) &&
       !deliverablePayload.isError;
     if (shouldFinalizeDraftPreview) {
@@ -877,7 +879,7 @@ async function processDiscordMessageInner(
     }
 
     const replyToId = replyReference.use();
-    if (isFinal) {
+    if (isFinal && !isReasoningPayload) {
       notifyFinalReplyStart();
     }
     await deliverDiscordReply({
@@ -900,7 +902,7 @@ async function processDiscordMessageInner(
       kind: info.kind,
     });
     replyReference.markSent();
-    if (isFinal && deliverablePayload.isError !== true) {
+    if (isFinal && !isReasoningPayload && deliverablePayload.isError !== true) {
       markUserFacingFinalDelivered();
     }
     return { visibleReplySent: true };

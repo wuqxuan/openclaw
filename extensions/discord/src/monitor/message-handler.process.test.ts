@@ -2639,14 +2639,34 @@ describe("processDiscordMessage draft streaming", () => {
     expect(deliverDiscordReply).not.toHaveBeenCalled();
   });
 
-  it("suppresses reasoning payload delivery to Discord", async () => {
+  it("delivers reasoning block payloads to Discord", async () => {
     mockDispatchSingleBlockReply({ text: "thinking...", isReasoning: true });
     await processStreamOffDiscordMessage();
 
-    expect(deliverDiscordReply).not.toHaveBeenCalled();
+    expect(deliverDiscordReply).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(deliverDiscordReply, "deliverDiscordReply")).toMatchObject({
+      replies: [{ text: "Thinking\n\n_thinking..._" }],
+    });
   });
 
-  it("suppresses reasoning-tagged final payload delivery to Discord", async () => {
+  it("delivers reasoning block payloads while progress drafts are active", async () => {
+    const draftStream = createMockDraftStreamForTest();
+    mockDispatchSingleBlockReply({ text: "thinking in progress mode...", isReasoning: true });
+
+    const ctx = await createAutomaticSourceDeliveryContext({
+      discordConfig: { streamMode: "partial", maxLinesPerMessage: 5 },
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    expect(deliverDiscordReply).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(deliverDiscordReply, "deliverDiscordReply")).toMatchObject({
+      replies: [{ text: "Thinking\n\n_thinking in progress mode..._" }],
+    });
+    expect(draftStream.update).not.toHaveBeenCalledWith("thinking in progress mode...");
+  });
+
+  it("delivers reasoning-tagged final payloads to Discord", async () => {
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
       await params?.dispatcher.sendFinalReply({
         text: "Reasoning:\nthis should stay internal",
@@ -2661,7 +2681,10 @@ describe("processDiscordMessage draft streaming", () => {
 
     await runProcessDiscordMessage(ctx);
 
-    expect(deliverDiscordReply).not.toHaveBeenCalled();
+    expect(deliverDiscordReply).toHaveBeenCalledTimes(1);
+    expect(firstMockArg(deliverDiscordReply, "deliverDiscordReply")).toMatchObject({
+      replies: [{ text: "Thinking\n\n_this should stay internal_" }],
+    });
     expect(editMessageDiscord).not.toHaveBeenCalled();
   });
 
