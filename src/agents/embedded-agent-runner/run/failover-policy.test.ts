@@ -32,6 +32,19 @@ describe("resolveRunFailoverDecision", () => {
     });
   });
 
+  it("falls back from retry-limit exhaustion when the reason is model_not_found", () => {
+    expect(
+      resolveRunFailoverDecision({
+        stage: "retry_limit",
+        fallbackConfigured: true,
+        failoverReason: "model_not_found",
+      }),
+    ).toEqual({
+      action: "fallback_model",
+      reason: "model_not_found",
+    });
+  });
+
   it("prefers prompt-side profile rotation before fallback", () => {
     // Prompt construction can fail before any model output exists, so rotate
     // the current provider profile before spending the configured fallback.

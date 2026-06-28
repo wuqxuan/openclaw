@@ -77,11 +77,7 @@ type RunFailoverDecisionParams =
 
 function shouldEscalateRetryLimit(reason: FailoverReason | null): boolean {
   return Boolean(
-    reason &&
-    reason !== "timeout" &&
-    reason !== "model_not_found" &&
-    reason !== "format" &&
-    reason !== "session_expired",
+    reason && reason !== "timeout" && reason !== "format" && reason !== "session_expired",
   );
 }
 
@@ -160,6 +156,9 @@ export function resolveRunFailoverDecision(
  */
 export function resolveRunFailoverDecision(params: RunFailoverDecisionParams): RunFailoverDecision {
   if (params.stage === "retry_limit") {
+    // Retry-limit exhaustion stays terminal for clearly non-replayable reasons,
+    // but configured model fallbacks should still catch model_not_found so a
+    // decommissioned primary can advance to the next candidate.
     if (params.fallbackConfigured && shouldEscalateRetryLimit(params.failoverReason)) {
       const fallbackReason = params.failoverReason ?? "unknown";
       return {
