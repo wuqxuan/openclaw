@@ -236,6 +236,45 @@ describe("noteClaudeCliHealth", () => {
     });
   });
 
+  it("accepts settings apiKeyHelper auth without requiring a stored claude-cli profile", async () => {
+    await withTempHome(({ homeDir, workspaceDir }) => {
+      const noteFn = vi.fn();
+      noteClaudeCliHealth(
+        {
+          agents: {
+            defaults: {
+              model: { primary: "claude-cli/claude-sonnet-4-6" },
+            },
+          },
+        },
+        {
+          homeDir,
+          workspaceDir,
+          noteFn,
+          store: createStore(),
+          readClaudeCliCredentials: () => ({
+            type: "api-key-helper",
+            provider: "anthropic",
+          }),
+          resolveCommandPath: () => "/opt/homebrew/bin/claude",
+        },
+      );
+
+      const body = noteBody(noteFn);
+      expect(body).toContain("Headless Claude auth: OK (apiKeyHelper).");
+      expect(body).toContain(
+        "OpenClaw auth profile: not required; Claude settings manage apiKeyHelper auth.",
+      );
+      expect(body).not.toContain(`OpenClaw auth profile: missing (${CLAUDE_CLI_PROFILE_ID})`);
+      expect(body).not.toContain(
+        `OpenClaw auth profile: ${CLAUDE_CLI_PROFILE_ID} (provider claude-cli).`,
+      );
+      expect(body).not.toContain(
+        "openclaw models auth login --provider anthropic --method cli --set-default",
+      );
+    });
+  });
+
   it("warns when Claude auth is not readable headlessly", async () => {
     await withTempHome(({ homeDir, workspaceDir }) => {
       const noteFn = vi.fn();

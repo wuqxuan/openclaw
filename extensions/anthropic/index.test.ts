@@ -993,6 +993,27 @@ describe("anthropic provider replay hooks", () => {
     });
   });
 
+  it("resolves claude-cli synthetic auth when Claude settings use apiKeyHelper", async () => {
+    readClaudeCliCredentialsForRuntimeMock.mockReset();
+    readClaudeCliCredentialsForRuntimeMock.mockReturnValue({
+      type: "api-key-helper",
+      provider: "anthropic",
+    });
+
+    const provider = await registerSingleProviderPlugin(anthropicPlugin);
+
+    expect(
+      provider.resolveSyntheticAuth?.({
+        provider: "claude-cli",
+      } as never),
+    ).toEqual({
+      apiKey: "claude-cli-api-key-helper",
+      source: "Claude CLI apiKeyHelper auth",
+      mode: "api-key",
+    });
+    expect(readClaudeCliCredentialsForRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
   it("stores a claude-cli auth profile during anthropic cli migration", async () => {
     readClaudeCliCredentialsForSetupMock.mockReset();
     readClaudeCliCredentialsForSetupMock.mockReturnValue({

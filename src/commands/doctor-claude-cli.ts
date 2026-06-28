@@ -31,7 +31,8 @@ const CLAUDE_CLI_PROVIDER = "claude-cli";
 
 type ClaudeCliReadableCredential =
   | Pick<OAuthCredential, "type" | "expires">
-  | Pick<TokenCredential, "type" | "expires">;
+  | Pick<TokenCredential, "type" | "expires">
+  | { type: "api-key-helper"; provider: "anthropic" };
 
 type ClaudeCliDirHealth = "present" | "missing" | "not_directory" | "unreadable" | "readonly";
 
@@ -86,6 +87,9 @@ function probeDirectoryHealth(dirPath: string): ClaudeCliDirHealth {
 function formatCredentialLabel(credential: ClaudeCliReadableCredential): string {
   if (credential.type === "oauth" || credential.type === "token") {
     return credential.type;
+  }
+  if (credential.type === "api-key-helper") {
+    return "apiKeyHelper";
   }
   return "unknown";
 }
@@ -262,14 +266,16 @@ export function noteClaudeCliHealth(
     );
   }
 
-  if (!storedProfile) {
+  if (!storedProfile && credential?.type === "api-key-helper") {
+    lines.push("- OpenClaw auth profile: not required; Claude settings manage apiKeyHelper auth.");
+  } else if (!storedProfile) {
     lines.push(`- OpenClaw auth profile: missing (${CLAUDE_CLI_PROFILE_ID}) in ${authStorePath}.`);
     fixHints.push(
       `- Fix: run ${formatCliCommand(
         "openclaw models auth login --provider anthropic --method cli --set-default",
       )}.`,
     );
-  } else if (storedProfile.provider !== CLAUDE_CLI_PROVIDER) {
+  } else if (storedProfile && storedProfile.provider !== CLAUDE_CLI_PROVIDER) {
     lines.push(
       `- OpenClaw auth profile: ${CLAUDE_CLI_PROFILE_ID} is wired to provider "${storedProfile.provider}" instead of "${CLAUDE_CLI_PROVIDER}".`,
     );

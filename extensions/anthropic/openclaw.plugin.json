@@ -191,6 +191,7 @@
       }
     }
   },
+  "nonSecretAuthMarkers": ["claude-cli-api-key-helper"],
   "cliBackends": ["claude-cli"],
   "syntheticAuthRefs": ["claude-cli"],
   "setup": {

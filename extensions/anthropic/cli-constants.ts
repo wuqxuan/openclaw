@@ -4,6 +4,8 @@
  */
 /** Synthetic provider/backend id for Claude Code CLI-backed Anthropic models. */
 export const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+/** Non-secret marker proving Claude CLI will resolve auth through settings apiKeyHelper at spawn time. */
+export const CLAUDE_CLI_API_KEY_HELPER_AUTH_MARKER = "claude-cli-api-key-helper";
 /** Default Claude CLI model ref for agent defaults and live tests. */
 export const CLAUDE_CLI_DEFAULT_MODEL_REF = `${CLAUDE_CLI_BACKEND_ID}/claude-opus-4-8`;
 /** Default Claude CLI models allowed when setup seeds the model allowlist. */

@@ -4,13 +4,19 @@
  */
 import type { ProviderPlugin } from "openclaw/plugin-sdk/provider-model-shared";
 import { readClaudeCliCredentialsForRuntime } from "./cli-auth-seam.js";
-
-const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+import { CLAUDE_CLI_API_KEY_HELPER_AUTH_MARKER, CLAUDE_CLI_BACKEND_ID } from "./cli-constants.js";
 
 function resolveClaudeCliSyntheticAuth() {
   const credential = readClaudeCliCredentialsForRuntime();
   if (!credential) {
     return undefined;
+  }
+  if (credential.type === "api-key-helper") {
+    return {
+      apiKey: CLAUDE_CLI_API_KEY_HELPER_AUTH_MARKER,
+      source: "Claude CLI apiKeyHelper auth",
+      mode: "api-key" as const,
+    };
   }
   return credential.type === "oauth"
     ? {

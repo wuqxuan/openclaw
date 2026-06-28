@@ -187,6 +187,29 @@ describe("cli credentials", () => {
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
+  it("treats Claude settings apiKeyHelper as runtime-managed auth without executing it", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-claude-helper-"));
+    fs.mkdirSync(path.join(tempDir, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, ".claude", "settings.json"),
+      JSON.stringify({ apiKeyHelper: "printf should-not-run" }),
+    );
+
+    const credential = readClaudeCliCredentialsCached({
+      allowKeychainPrompt: false,
+      ttlMs: CLI_CREDENTIALS_CACHE_TTL_MS,
+      platform: "linux",
+      homeDir: tempDir,
+      execSync: execSyncMock,
+    });
+
+    expectFields(credential, {
+      type: "api-key-helper",
+      provider: "anthropic",
+    });
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
   it("reads Codex credentials from keychain when available", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-"));
     process.env.CODEX_HOME = tempHome;

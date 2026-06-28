@@ -175,6 +175,9 @@ function buildClaudeCliAuthProfiles(
   if (!credential) {
     return [];
   }
+  if (credential.type === "api-key-helper") {
+    return [];
+  }
   if (credential.type === "oauth") {
     return [
       {

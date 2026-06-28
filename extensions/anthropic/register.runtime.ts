@@ -44,6 +44,7 @@ import { buildAnthropicCliBackend } from "./cli-backend.js";
 import { buildClaudeCliCatalogEntries } from "./cli-catalog.js";
 import { buildAnthropicCliMigrationResult } from "./cli-migration.js";
 import {
+  CLAUDE_CLI_API_KEY_HELPER_AUTH_MARKER,
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_DEFAULT_ALLOWLIST_REFS,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
@@ -638,6 +639,13 @@ function resolveClaudeCliSyntheticAuth() {
   const credential = claudeCliAuth.readClaudeCliCredentialsForRuntime();
   if (!credential) {
     return undefined;
+  }
+  if (credential.type === "api-key-helper") {
+    return {
+      apiKey: CLAUDE_CLI_API_KEY_HELPER_AUTH_MARKER,
+      source: "Claude CLI apiKeyHelper auth",
+      mode: "api-key" as const,
+    };
   }
   return credential.type === "oauth"
     ? {
