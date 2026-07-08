@@ -1380,6 +1380,64 @@ describe("tryDispatchAcpReply", () => {
     ]);
   });
 
+  it("drops current image attachments already described by media understanding", async () => {
+    setReadyAcpResolution();
+    const currentPath = "/tmp/openclaw-described-current.png";
+    const currentImage = Buffer.from("described-image");
+    acpAttachmentBuffers.set(currentPath, currentImage);
+
+    await runDispatch({
+      bodyForAgent: "what is in this image?",
+      ctxOverrides: {
+        MediaPath: currentPath,
+        MediaType: "image/png",
+        MediaUnderstanding: [
+          {
+            kind: "image.description",
+            attachmentIndex: 0,
+            text: "A red square.",
+            provider: "imageModel",
+          },
+        ],
+      },
+    });
+
+    // The image already exists as text, so text-only ACP models must not receive the raw bytes.
+    expect(mediaUnderstandingMocks.applyMediaUnderstanding).not.toHaveBeenCalled();
+    expect(runTurnCall().text).toBe("what is in this image?");
+    expect(runTurnCall().attachments).toBeUndefined();
+  });
+
+  it("keeps undescribed current image attachments when a different index was described", async () => {
+    setReadyAcpResolution();
+    const currentPath = "/tmp/openclaw-undescribed-current.png";
+    const currentImage = Buffer.from("undescribed-image");
+    acpAttachmentBuffers.set(currentPath, currentImage);
+
+    await runDispatch({
+      bodyForAgent: "describe this",
+      ctxOverrides: {
+        MediaPath: currentPath,
+        MediaType: "image/png",
+        MediaUnderstanding: [
+          {
+            kind: "image.description",
+            attachmentIndex: 1,
+            text: "Some other attachment.",
+            provider: "imageModel",
+          },
+        ],
+      },
+    });
+
+    expect(runTurnCall().attachments).toEqual([
+      {
+        mediaType: "image/png",
+        data: currentImage.toString("base64"),
+      },
+    ]);
+  });
+
   it("preserves chat.send inline image attachments over recent history images", async () => {
     setReadyAcpResolution();
     const image = {
