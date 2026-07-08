@@ -511,4 +511,40 @@ describe("trajectory runtime", () => {
 
     expect(recorder).toBeNull();
   });
+
+  it("records session.ended timestamp later than model.completed when recorded after a delay", () => {
+    const writes: string[] = [];
+    const recorder = createTrajectoryRuntimeRecorder({
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      sessionFile: "/tmp/session.jsonl",
+      writer: {
+        filePath: "/tmp/session.trajectory.jsonl",
+        write: (line) => {
+          writes.push(line);
+        },
+        flush: async () => undefined,
+      },
+    });
+
+    const runtimeRecorder = expectTrajectoryRuntimeRecorder(recorder);
+    runtimeRecorder.recordEvent("model.completed", { status: "success" });
+
+    const modelCompletedTs = JSON.parse(writes[0]).ts;
+
+    // Simulate the cleanup delay that happens in runEmbeddedAttempt's finally
+    // block between model.completed and session.ended.  In production this is
+    // the wall-clock time spent in cleanupEmbeddedAttemptResources.
+    const delayMs = 500;
+    vi.useFakeTimers();
+    vi.advanceTimersByTime(delayMs);
+
+    runtimeRecorder.recordEvent("session.ended", { status: "success" });
+
+    const sessionEndedTs = JSON.parse(writes[1]).ts;
+    expect(new Date(sessionEndedTs).getTime()).toBeGreaterThan(
+      new Date(modelCompletedTs).getTime(),
+    );
+    vi.useRealTimers();
+  });
 });
