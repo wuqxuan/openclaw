@@ -120,6 +120,53 @@ describe("createTeamsReplyStreamController", () => {
     expect(ctrl.preparePayload({ text: "Second segment" })).toEqual({ text: "Second segment" });
   });
 
+  it("does not mid-word-slice post-tool partials after the stream is finalized (#102274)", async () => {
+    // Regression of #56071 after the #76262 controller rebase: finalize closed
+    // the preview card but left emittedTextLength at the preamble length, so a
+    // longer post-tool segment was sliced mid-word into the same bubble.
+    const stream = makeStream();
+    const ctrl = makeController({ stream });
+    const preamble = "I'll check the CRM.";
+    const finalText = "There are **190 contacts** in RForce.";
+    const corruptSlice = finalText.slice(preamble.length); // "tacts** in RForce."
+
+    ctrl.onPartialReply({ text: preamble });
+    expect(stream.emit).toHaveBeenCalledWith(preamble);
+    expect(ctrl.preparePayload({ text: preamble })).toBeUndefined();
+    await expect(ctrl.finalize()).resolves.toBeUndefined();
+
+    const emitCountAfterFinalize = stream.emit.mock.calls.length;
+    ctrl.onPartialReply({ text: finalText });
+
+    const postFinalizeEmits = stream.emit.mock.calls
+      .slice(emitCountAfterFinalize)
+      .map((call) => call[0]);
+    expect(postFinalizeEmits).not.toContain(corruptSlice);
+    expect(stream.emit).toHaveBeenCalledTimes(emitCountAfterFinalize);
+    expect(ctrl.preparePayload({ text: finalText })).toEqual({ text: finalText });
+  });
+
+  it("does not mid-word-slice when a new post-tool segment restarts cumulative text (#102274)", () => {
+    // If the pipeline restarts cumulative text for the next assistant message
+    // before preparePayload retires the stream, a length-only delta cursor would
+    // still slice the new segment at the preamble offset.
+    const stream = makeStream();
+    const ctrl = makeController({ stream });
+    const preamble = "I'll check the CRM.";
+    const finalText = "There are **190 contacts** in RForce.";
+    const corruptSlice = finalText.slice(preamble.length);
+
+    ctrl.onPartialReply({ text: preamble });
+    ctrl.onPartialReply({ text: finalText });
+
+    const emitted = stream.emit.mock.calls.map((call) => call[0]);
+    expect(emitted).not.toContain(corruptSlice);
+    // Full new segment is emitted after a cursor reset (appending sink then holds
+    // preamble + complete final rather than a mid-word merge).
+    expect(emitted).toContain(finalText);
+    expect(ctrl.preparePayload({ text: finalText })).toBeUndefined();
+  });
+
   it("delivers all later segments across 3+ tool call rounds", () => {
     const stream = makeStream();
     const ctrl = makeController({ stream });
@@ -273,6 +320,25 @@ describe("createTeamsReplyStreamController", () => {
 
     expect(ctrl.preparePayload({ text: "complete final answer" })).toBeUndefined();
     expect(stream.emit).toHaveBeenCalledWith("complete final answer");
+  });
+
+  it("uses block delivery for progress-mode text after the stream is finalized (#102274)", async () => {
+    const stream = makeStream();
+    const ctrl = createTeamsReplyStreamController({
+      conversationType: "personal",
+      context: makeContext(stream),
+      feedbackLoopEnabled: false,
+      msteamsConfig: { streaming: { mode: "progress" } } as never,
+    });
+
+    expect(ctrl.preparePayload({ text: "I will check." })).toBeUndefined();
+    await expect(ctrl.finalize()).resolves.toBeUndefined();
+
+    const emitCountAfterFinalize = stream.emit.mock.calls.length;
+    expect(ctrl.preparePayload({ text: "The result is ready." })).toEqual({
+      text: "The result is ready.",
+    });
+    expect(stream.emit).toHaveBeenCalledTimes(emitCountAfterFinalize);
   });
 
   it("falls back to normal delivery when progress final streaming fails", () => {

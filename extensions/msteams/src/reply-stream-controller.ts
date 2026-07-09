@@ -83,6 +83,11 @@ export function createTeamsReplyStreamController(params: {
 
   let tokensEmitted = false;
   let streamFinalizationPending = false;
+  // After the first streamed segment is handed to close()/finalization, the
+  // SDK stream is a single preview-card lifecycle. Later post-tool segments
+  // must use block delivery instead of reusing a stale delta cursor (#102274,
+  // regression of #56071 after the #76262 controller rebase).
+  let streamRetired = false;
   let canceledLocally = false;
   // Set when `stream.emit/close` fails for a non-cancel reason after we've
   // already started streaming. Differentiates "user pressed Stop" from "the
@@ -99,6 +104,17 @@ export function createTeamsReplyStreamController(params: {
   // an appending sink produces "chunk1 + chunk2 + chunk3..." duplication. We
   // track the length of text we've already emitted and forward only the delta.
   let emittedTextLength = 0;
+  // Last cumulative text successfully emitted for the current segment. Used to
+  // detect tool-boundary segment restarts where the pipeline starts a new
+  // cumulative string that does not extend the preamble (#102274).
+  let lastStreamedText = "";
+
+  const retireStreamForLaterSegments = (): void => {
+    streamRetired = true;
+    emittedTextLength = 0;
+    lastStreamedText = "";
+    tokensEmitted = false;
+  };
 
   const wasCanceled = () => canceledLocally || Boolean(stream?.canceled);
 
@@ -162,6 +178,7 @@ export function createTeamsReplyStreamController(params: {
         !stream ||
         !payload.text ||
         wasCanceled() ||
+        streamRetired ||
         streamMode !== "partial" ||
         streamFinalizationPending
       ) {
@@ -171,6 +188,25 @@ export function createTeamsReplyStreamController(params: {
       // appending sink. Without this, "Here's a" → "Here's a sonnet" → ...
       // gets emitted as full repeats and the SDK concatenates the lot.
       const fullText = payload.text;
+      // Tool / segment boundary: the pipeline restarts cumulative text for the
+      // next assistant message. It no longer extends the previously streamed
+      // preamble, so the old offset would mid-word-slice the new segment
+      // (e.g. "I'll check the CRM." + "There are...".slice(19) → "...CRM.tacts").
+      // Reset the delta cursor so the full new segment is emitted rather than
+      // a stale mid-word slice. When the first segment already retired the
+      // stream (preparePayload/finalize path), the gate above skips this.
+      // Do not treat edit-in-place shortening (new text is a prefix of the old
+      // cumulative) as a segment restart — that path is handled by the length
+      // guard below.
+      if (
+        lastStreamedText.length > 0 &&
+        fullText !== lastStreamedText &&
+        !fullText.startsWith(lastStreamedText) &&
+        !lastStreamedText.startsWith(fullText)
+      ) {
+        emittedTextLength = 0;
+        lastStreamedText = "";
+      }
       // If the pipeline ever sends shorter text than we've emitted (e.g.
       // edit-in-place semantics), skip rather than emit a negative slice.
       if (fullText.length <= emittedTextLength) {
@@ -180,6 +216,7 @@ export function createTeamsReplyStreamController(params: {
       try {
         stream.emit(delta);
         emittedTextLength = fullText.length;
+        lastStreamedText = fullText;
         tokensEmitted = true;
       } catch (err) {
         if (isStreamCancelledError(err)) {
@@ -270,6 +307,11 @@ export function createTeamsReplyStreamController(params: {
       if (wasCanceled()) {
         return undefined;
       }
+      // Stream already closed a prior segment for this turn. Later post-tool
+      // payloads deliver as normal block messages (#102274 / #56071).
+      if (streamRetired) {
+        return payload;
+      }
       // Partial mode with tokens already streamed: stream carries the text;
       // strip text from the payload (keep media if any) so block delivery
       // doesn't duplicate. Exception: if a non-cancel stream failure was
@@ -279,7 +321,9 @@ export function createTeamsReplyStreamController(params: {
         const hasMedia = Boolean(payload.mediaUrl || payload.mediaUrls?.length);
         pendingFinalPayload = fallbackPayloadForSuppressedFinal(payload);
         streamFinalizationPending = true;
-        tokensEmitted = false;
+        // Retire after the first streamed segment so markDispatchIdle/finalize
+        // cannot reopen the partial path with a stale emittedTextLength.
+        retireStreamForLaterSegments();
         return hasMedia ? { ...payload, text: undefined } : undefined;
       }
       // Progress mode (or partial mode that received no tokens — e.g. a
@@ -292,6 +336,7 @@ export function createTeamsReplyStreamController(params: {
           stream.emit(payload.text);
           pendingFinalPayload = fallbackPayloadForSuppressedFinal(payload);
           streamFinalizationPending = true;
+          retireStreamForLaterSegments();
           const hasMedia = Boolean(payload.mediaUrl || payload.mediaUrls?.length);
           return hasMedia ? { ...payload, text: undefined } : undefined;
         } catch (err) {
@@ -313,6 +358,11 @@ export function createTeamsReplyStreamController(params: {
       if (!stream || !streamFinalizationPending || wasCanceled()) {
         return undefined;
       }
+      // Belt-and-suspenders: finalize always retires the stream for later
+      // segments even if preparePayload did not (e.g. progress-mode emit path).
+      streamRetired = true;
+      emittedTextLength = 0;
+      lastStreamedText = "";
       // Emit a final MessageActivity carrying the AI-generated marker and (if
       // enabled) the feedback channelData. The SDK's HttpStream merges this
       // into the closing activity it sends to Teams, so streamed replies still
