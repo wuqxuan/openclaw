@@ -68,6 +68,12 @@ describe("classifyCrestodianApprovalIntent", () => {
       ),
     ).resolves.toBe("approve");
     expect(deps.completeWithPreparedSimpleCompletionModel).toHaveBeenCalledOnce();
+    expect(deps.prepareSimpleCompletionModelForAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        useUtilityModel: true,
+        allowMissingApiKeyModes: ["aws-sdk"],
+      }),
+    );
   });
 
   it("fails closed to other on unexpected model output", async () => {

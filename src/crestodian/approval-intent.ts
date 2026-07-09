@@ -96,11 +96,14 @@ export async function classifyCrestodianApprovalIntent(
       return "other";
     }
     const cfg = snapshot.runtimeConfig ?? snapshot.config;
+    // Same short utility tier as other simple-completion classifiers: ambiguous
+    // approve/decline answers are ~8 tokens and must not bill the flagship model.
     const prepared = await (
       deps.prepareSimpleCompletionModelForAgent ?? prepareSimpleCompletionModelForAgent
     )({
       cfg,
       agentId: resolveDefaultAgentId(cfg),
+      useUtilityModel: true,
       allowMissingApiKeyModes: ["aws-sdk"],
     });
     if ("error" in prepared) {
