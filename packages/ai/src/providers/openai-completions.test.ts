@@ -124,6 +124,19 @@ function makeTextChunk(text: string): OpenAICompatibleChatCompletionChunk {
   };
 }
 
+function makeRefusalChunk(refusal: string): OpenAICompatibleChatCompletionChunk {
+  return {
+    id: "chatcmpl-test",
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: null, refusal },
+        finish_reason: "stop",
+      },
+    ],
+  };
+}
+
 function makeToolCallChunk(
   id: string,
   name: string,
@@ -219,6 +232,17 @@ describe("OpenAI-compatible completions params", () => {
     } finally {
       configureAiTransportHost({});
     }
+  });
+
+  it("surfaces chat-completions refusal deltas as visible assistant text", async () => {
+    mockChunksRef.chunks = [makeRefusalChunk("I can't help with that.")];
+
+    const result = await streamOpenAICompletions(model, context, {
+      apiKey: "sk-test",
+    }).result();
+
+    expect(result.content).toStrictEqual([{ type: "text", text: "I can't help with that." }]);
+    expect(result.stopReason).toBe("stop");
   });
 
   it("preserves a valid provider-reported usage cost", async () => {

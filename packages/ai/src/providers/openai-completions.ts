@@ -461,6 +461,14 @@ export const streamOpenAICompletions: StreamFunction<
             appendPartitionedContent(choice.delta.content, Boolean(foundReasoningField));
           }
 
+          // Chat Completions can put safety/structured-output refusals in a
+          // top-level `refusal` field with content null. Surface that as
+          // visible text so the assistant turn is not empty.
+          const refusalText = typeof choice.delta.refusal === "string" ? choice.delta.refusal : "";
+          if (refusalText.length > 0) {
+            appendPartitionedContent(refusalText, Boolean(foundReasoningField));
+          }
+
           if (choice?.delta?.tool_calls) {
             flushPartitionedContent();
             // The tool-call lane is also a reasoning boundary; seal the thought
