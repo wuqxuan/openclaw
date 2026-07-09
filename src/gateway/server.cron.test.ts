@@ -1816,6 +1816,73 @@ describe("gateway server cron", () => {
     }
   }, 45_000);
 
+  test("announces channel-shaped failure destinations without mode under a global webhook default (#102235)", async () => {
+    const { prevSkipCron } = await setupCronTestRun({
+      tempPrefix: "openclaw-gw-cron-fd-channel-no-mode-",
+      cronEnabled: false,
+    });
+
+    // Global webhook default that must not poison channel-shaped job failure routes.
+    await writeCronConfig({
+      cron: {
+        failureDestination: {
+          mode: "webhook",
+          to: "https://hook.example/cron",
+        },
+      },
+    });
+
+    const { server, ws } = await startServerWithClient();
+    await connectOk(ws);
+
+    try {
+      sendFailureNotificationAnnounceMock.mockClear();
+      fetchWithSsrFGuardMock.mockClear();
+      cronIsolatedRun.mockResolvedValueOnce({ status: "error", summary: "delivery failed" });
+
+      // Job shape from CLI `--failure-channel slack --failure-to #alerts` with no `--failure-mode`.
+      const jobId = await addWebhookCronJob({
+        ws,
+        name: "channel fd no mode",
+        sessionTarget: "isolated",
+        delivery: {
+          mode: "none",
+          failureDestination: {
+            channel: "slack",
+            to: "#alerts",
+          },
+        },
+      });
+
+      const finished = waitForCronEvent(
+        ws,
+        (payload) => payload?.jobId === jobId && payload?.action === "finished",
+      );
+      await runCronJobForce(ws, jobId);
+      await finished;
+
+      expect(sendFailureNotificationAnnounceMock).toHaveBeenCalledTimes(1);
+      const call = sendFailureNotificationAnnounceMock.mock.calls.at(0);
+      if (!call) {
+        throw new Error("expected failure announcement call");
+      }
+      const args = call as unknown as [unknown, unknown, string, string, unknown, string];
+      expect(args[3]).toBe(jobId);
+      expect(args[4]).toEqual({
+        channel: "slack",
+        to: "#alerts",
+        accountId: undefined,
+        sessionKey: undefined,
+        inheritSessionThread: false,
+      });
+      expect(args[5]).toBe('⚠️ Cron job "channel fd no mode" failed: unknown error');
+      // Must not treat "#alerts" as a webhook URL (no SSRF fetch / invalid-URL webhook path).
+      expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+    } finally {
+      await cleanupCronTestRun({ ws, server, prevSkipCron });
+    }
+  }, 45_000);
+
   test("prefers sessionTarget session context for failure announcements over creator sessionKey", async () => {
     const { prevSkipCron } = await setupCronTestRun({
       tempPrefix: "openclaw-gw-cron-failure-session-target-",
