@@ -33,11 +33,7 @@ export * from "./types.js";
 import { anthropicOAuthProvider } from "./anthropic.js";
 import { githubCopilotOAuthProvider } from "./github-copilot.js";
 import { openaiCodexOAuthProvider } from "./openai-chatgpt.js";
-import type {
-  OAuthCredentials,
-  OAuthProviderId,
-  OAuthProviderInterface,
-} from "./types.js";
+import type { OAuthCredentials, OAuthProviderId, OAuthProviderInterface } from "./types.js";
 
 const BUILT_IN_OAUTH_PROVIDERS: OAuthProviderInterface[] = [
   anthropicOAuthProvider,
@@ -85,8 +81,19 @@ export function getOAuthProviders(): OAuthProviderInterface[] {
 // ============================================================================
 
 /**
+ * Pre-expiry refresh window for {@link getOAuthApiKey}.
+ *
+ * Must match auth-profiles `DEFAULT_OAUTH_REFRESH_MARGIN_MS` so manager-driven
+ * refresh (hasUsableOAuthCredential → getOAuthApiKey) is not a silent no-op
+ * when the access token is still within the raw `expires` timestamp but inside
+ * the shared margin. See issue #103846.
+ */
+export const OAUTH_API_KEY_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+/**
  * Get API key for a provider from OAuth credentials.
- * Automatically refreshes expired tokens.
+ * Automatically refreshes tokens that are expired or inside the shared
+ * pre-expiry refresh margin.
  *
  * @returns API key string and updated credentials, or null if no credentials
  * @throws Error if refresh fails
@@ -94,6 +101,10 @@ export function getOAuthProviders(): OAuthProviderInterface[] {
 export async function getOAuthApiKey(
   providerId: OAuthProviderId,
   credentials: Record<string, OAuthCredentials>,
+  opts?: {
+    now?: number;
+    refreshMarginMs?: number;
+  },
 ): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
   const provider = getOAuthProvider(providerId);
   if (!provider) {
@@ -105,8 +116,11 @@ export async function getOAuthApiKey(
     return null;
   }
 
-  // Refresh if expired
-  if (Date.now() >= creds.expires) {
+  const now = opts?.now ?? Date.now();
+  const refreshMarginMs = Math.max(0, opts?.refreshMarginMs ?? OAUTH_API_KEY_REFRESH_MARGIN_MS);
+  // Align with hasUsableOAuthCredential: refresh once remaining life is within
+  // the margin, not only after the stored expires timestamp has fully elapsed.
+  if (now + refreshMarginMs >= creds.expires) {
     try {
       creds = await provider.refreshToken(creds);
     } catch (error) {
