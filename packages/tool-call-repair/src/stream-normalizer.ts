@@ -83,6 +83,18 @@ function couldStillBeXmlishParameterPayload(text: string, start: number): boolea
   return matchesLiteralPrefix(text.slice(cursor).toLowerCase(), "<parameter=");
 }
 
+/** True while bytes can still complete a zero-argument `</function>` close. */
+function couldStillBeXmlishFunctionClose(text: string, start: number): boolean {
+  let cursor = start;
+  while (cursor < text.length && /\s/.test(text[cursor] ?? "")) {
+    cursor += 1;
+  }
+  if (cursor >= text.length) {
+    return true;
+  }
+  return matchesLiteralPrefix(text.slice(cursor).toLowerCase(), "</function>");
+}
+
 function couldStillBeBracketedStandaloneToolCall(
   text: string,
   matcher: PlainTextToolCallNameMatcher,
@@ -193,7 +205,12 @@ function couldStillBeXmlishFunctionToolCall(
   if (!matcher.hasExactName(name)) {
     return false;
   }
-  return couldStillBeXmlishParameterPayload(text, cursor + 1);
+  // Zero-argument XML calls close immediately with </function>; keep buffering
+  // that path instead of treating the close tag as an impossible non-tool suffix.
+  return (
+    couldStillBeXmlishParameterPayload(text, cursor + 1) ||
+    couldStillBeXmlishFunctionClose(text, cursor + 1)
+  );
 }
 
 function couldStillBeHarmonyStandaloneToolCall(

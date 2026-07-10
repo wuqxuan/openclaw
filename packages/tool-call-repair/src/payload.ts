@@ -50,6 +50,7 @@ function utf8ByteLengthWithinLimit(
 }
 
 type PlainTextToolCallOpening = {
+  allowsZeroArguments?: boolean;
   allowsOptionalXmlishClose?: boolean;
   end: number;
   name: string;
@@ -137,7 +138,12 @@ function parseXmlishFunctionOpening(text: string, start: number): PlainTextToolC
   if (!match?.[1]) {
     return null;
   }
-  return { end: start + match[0].length, name: match[1], requiresClosing: false };
+  return {
+    allowsZeroArguments: true,
+    end: start + match[0].length,
+    name: match[1],
+    requiresClosing: false,
+  };
 }
 
 function parseOpening(text: string, start: number): PlainTextToolCallOpening | null {
@@ -323,7 +329,7 @@ function parseXmlishPlainTextToolCallBlockEndAt(text: string, start: number): nu
     parameterCount += 1;
     cursor = parameter.end;
   }
-  if (parameterCount === 0) {
+  if (parameterCount === 0 && !opening.allowsZeroArguments) {
     return null;
   }
   return opening.allowsOptionalXmlishClose
@@ -369,7 +375,7 @@ function parseXmlishPlainTextToolCallBlockAt(
     parameterCount += 1;
     cursor = parameter.end;
   }
-  if (parameterCount === 0) {
+  if (parameterCount === 0 && !opening.allowsZeroArguments) {
     return null;
   }
 

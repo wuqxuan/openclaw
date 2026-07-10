@@ -165,6 +165,28 @@ describe("parseStandalonePlainTextToolCallBlocks", () => {
     ]);
   });
 
+  it("parses zero-argument XML tool calls", () => {
+    const raw = "<function=get_system_info></function>";
+
+    expect(
+      parseStandalonePlainTextToolCallBlocks(raw, {
+        allowedToolNames: ["get_system_info"],
+      }),
+    ).toEqual([
+      {
+        arguments: {},
+        end: raw.length,
+        name: "get_system_info",
+        raw,
+        start: 0,
+      },
+    ]);
+  });
+
+  it("keeps bracketed tool openings from becoming zero-argument XML calls", () => {
+    expect(parseStandalonePlainTextToolCallBlocks("[tool:get_system_info]")).toBeNull();
+  });
+
   it("preserves whitespace inside serialized XML parameter values", () => {
     const raw = [
       "<function=write>",
@@ -333,6 +355,12 @@ describe("stripPlainTextToolCallBlocks", () => {
         ].join("\n"),
       ),
     ).toBe("before\n\nafter");
+  });
+
+  it("strips zero-argument XML tool calls", () => {
+    expect(
+      stripPlainTextToolCallBlocks("before\n<function=get_system_info></function>\nafter"),
+    ).toBe("before\nafter");
   });
 
   it("keeps legacy bracketed XML parameter blocks scrubbed", () => {
