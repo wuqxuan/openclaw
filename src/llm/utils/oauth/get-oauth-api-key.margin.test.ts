@@ -19,6 +19,7 @@ afterEach(() => {
 function registerAnthropicProvider(refreshToken: OAuthProviderInterface["refreshToken"]) {
   registerOAuthProvider({
     id: "anthropic",
+    name: "Anthropic (Claude Pro/Max)",
     async login() {
       throw new Error("unused");
     },
@@ -26,7 +27,7 @@ function registerAnthropicProvider(refreshToken: OAuthProviderInterface["refresh
     getApiKey(creds: OAuthCredentials) {
       return creds.access;
     },
-  } as OAuthProviderInterface);
+  } satisfies OAuthProviderInterface);
 }
 
 describe("getOAuthApiKey refresh margin", () => {
