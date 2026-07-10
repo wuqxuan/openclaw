@@ -189,13 +189,12 @@ export function resolveFailureDestination(
     if (hasJobAccountIdField) {
       accountId = jobAccountId;
     }
-    // A channel-shaped override without mode is announce (same default as primary
-    // delivery). Inheriting a global webhook mode would feed the chat target to the
-    // webhook URL validator and silently drop the failure alert (#102235).
+    // Naming a channel makes this an announce route even when mode is omitted;
+    // inheriting webhook here would reinterpret the chat target as a URL.
     const jobImpliesAnnounce = !hasJobModeField && jobChannel !== undefined;
     if (hasJobModeField || jobImpliesAnnounce) {
       const effectiveJobMode = jobImpliesAnnounce ? "announce" : jobMode;
-      const globalMode = globalConfig?.mode ?? "announce";
+      const globalMode = mode ?? "announce";
       const resolvedJobMode = effectiveJobMode ?? "announce";
       if (!jobToExplicitValue && globalMode !== resolvedJobMode) {
         // Do not carry an inherited target across modes; an announce chat is not a webhook URL.

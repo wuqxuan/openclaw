@@ -367,7 +367,8 @@ function expectFailureAnnounceCall(params: {
   jobId: string;
   channel: string;
   to?: string;
-  sessionKey: string;
+  sessionKey?: string;
+  inheritSessionThread?: false;
   message: string;
 }) {
   expect(sendFailureNotificationAnnounceMock).toHaveBeenCalledTimes(1);
@@ -383,6 +384,7 @@ function expectFailureAnnounceCall(params: {
     to: params.to,
     accountId: undefined,
     sessionKey: params.sessionKey,
+    ...(params.inheritSessionThread === false ? { inheritSessionThread: false } : {}),
   });
   expect(args[5]).toBe(params.message);
 }
@@ -1822,7 +1824,6 @@ describe("gateway server cron", () => {
       cronEnabled: false,
     });
 
-    // Global webhook default that must not poison channel-shaped job failure routes.
     await writeCronConfig({
       cron: {
         failureDestination: {
@@ -1840,7 +1841,6 @@ describe("gateway server cron", () => {
       fetchWithSsrFGuardMock.mockClear();
       cronIsolatedRun.mockResolvedValueOnce({ status: "error", summary: "delivery failed" });
 
-      // Job shape from CLI `--failure-channel slack --failure-to #alerts` with no `--failure-mode`.
       const jobId = await addWebhookCronJob({
         ws,
         name: "channel fd no mode",
@@ -1861,22 +1861,14 @@ describe("gateway server cron", () => {
       await runCronJobForce(ws, jobId);
       await finished;
 
-      expect(sendFailureNotificationAnnounceMock).toHaveBeenCalledTimes(1);
-      const call = sendFailureNotificationAnnounceMock.mock.calls.at(0);
-      if (!call) {
-        throw new Error("expected failure announcement call");
-      }
-      const args = call as unknown as [unknown, unknown, string, string, unknown, string];
-      expect(args[3]).toBe(jobId);
-      expect(args[4]).toEqual({
+      expectFailureAnnounceCall({
+        jobId,
         channel: "slack",
         to: "#alerts",
-        accountId: undefined,
         sessionKey: undefined,
         inheritSessionThread: false,
+        message: '⚠️ Cron job "channel fd no mode" failed: unknown error',
       });
-      expect(args[5]).toBe('⚠️ Cron job "channel fd no mode" failed: unknown error');
-      // Must not treat "#alerts" as a webhook URL (no SSRF fetch / invalid-URL webhook path).
       expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
     } finally {
       await cleanupCronTestRun({ ws, server, prevSkipCron });
