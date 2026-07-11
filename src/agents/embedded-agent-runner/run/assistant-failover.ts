@@ -4,6 +4,7 @@
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { AssistantMessage } from "../../../llm/types.js";
+import { resolveAutoRetryDelayMs } from "../../../llm/utils/retry.js";
 import { extractLeadingHttpStatus } from "../../../shared/assistant-error-format.js";
 import type { AuthProfileFailureReason } from "../../auth-profiles.js";
 import {
@@ -167,6 +168,13 @@ export async function handleAssistantFailover(params: {
   timedOutByRunBudget: boolean;
   allowSameModelIdleTimeoutRetry: boolean;
   allowSameModelRateLimitRetry: boolean;
+  /**
+   * Provider retry max for structured/server Retry-After cooldowns.
+   * Matches SettingsManager.getProviderRetrySettings().maxRetryDelayMs (default 60000).
+   * Positive: decline same-model short-window retry when Retry-After exceeds the max.
+   * Zero: cap disabled (unlimited) for this check.
+   */
+  maxRetryDelayMs?: number;
   assistantProfileFailureReason: AuthProfileFailureReason | null;
   lastProfileId?: string;
   modelId: string;
@@ -292,9 +300,25 @@ export async function handleAssistantFailover(params: {
           retryAfterSeconds: params.lastAssistant?.retryAfterSeconds,
         },
       );
+      // Same maxRetryDelayMs contract as AgentSession auto-retry: a positive
+      // cap must not be bypassed by this outer same-model short-window branch.
+      const maxRetryDelayMs =
+        params.maxRetryDelayMs === undefined || !Number.isFinite(params.maxRetryDelayMs)
+          ? 60_000
+          : Math.max(0, params.maxRetryDelayMs);
+      const retryAfterWithinCap =
+        shortWindowRetry?.retryAfterSeconds === undefined
+          ? true
+          : resolveAutoRetryDelayMs({
+              attempt: 1,
+              baseDelayMs: 0,
+              retryAfterSeconds: shortWindowRetry.retryAfterSeconds,
+              maxRetryDelayMs,
+            }).action === "delay";
       if (
         params.allowSameModelRateLimitRetry &&
         shortWindowRetry &&
+        retryAfterWithinCap &&
         (await params.maybeRetrySameModelRateLimit(shortWindowRetry))
       ) {
         return sameModelRateLimitRetry();

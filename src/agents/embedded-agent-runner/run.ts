@@ -51,6 +51,7 @@ import {
   retireSessionMcpRuntime,
   retireSessionMcpRuntimeForSessionKey,
 } from "../agent-bundle-mcp-tools.js";
+import { createPreparedEmbeddedAgentSettingsManager } from "../agent-project-settings.js";
 import {
   resolveAgentDir,
   resolveSessionAgentIds,
@@ -1696,6 +1697,13 @@ async function runEmbeddedAgentInternal(
       let compactionContinuationRetryAttempts = 0;
       let beforeAgentFinalizeRevisionAttempts = 0;
       let sameModelIdleTimeoutRetries = 0;
+      // Resolve once per outer run so embedded same-model rate-limit retry honors
+      // the same provider maxRetryDelayMs contract as AgentSession auto-retry.
+      const providerMaxRetryDelayMs = createPreparedEmbeddedAgentSettingsManager({
+        cwd: params.cwd ?? resolvedWorkspace,
+        agentDir,
+        cfg: params.config,
+      }).getProviderRetrySettings().maxRetryDelayMs;
       // Cost-runaway breaker for #76293. State lives at the run-loop level
       // on purpose so it survives across attempt boundaries and across
       // profile/auth retries within this embedded run (a wrapper-local
@@ -3662,6 +3670,7 @@ async function runEmbeddedAgentInternal(
               canRestartForLiveSwitch &&
               sameModelIdleTimeoutRetries < MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES,
             allowSameModelRateLimitRetry: rateLimitProfileRotations < rateLimitProfileRotationLimit,
+            maxRetryDelayMs: providerMaxRetryDelayMs,
             assistantProfileFailureReason,
             lastProfileId,
             modelId,
