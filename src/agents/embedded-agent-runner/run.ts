@@ -247,6 +247,7 @@ import {
 import { mergeAttemptToolMediaPayloads } from "./run/tool-media-payloads.js";
 import type { EmbeddedRunFastModeParam } from "./run/types.js";
 import {
+  resolveLiveToolResultBudgets,
   resolveLiveToolResultMaxChars,
   sessionLikelyHasOversizedToolResults,
   truncateOversizedToolResultsInSession,
@@ -2944,7 +2945,7 @@ async function runEmbeddedAgentInternal(
                   const truncResult = await truncateOversizedToolResultsInSession({
                     sessionFile: activeSessionFile,
                     contextWindowTokens: ctxInfo.tokens,
-                    maxCharsOverride: resolveLiveToolResultMaxChars({
+                    maxCharsOverride: resolveLiveToolResultBudgets({
                       contextWindowTokens: ctxInfo.tokens,
                       cfg: params.config,
                       agentId: sessionAgentId,
@@ -2990,16 +2991,20 @@ async function runEmbeddedAgentInternal(
             }
             if (!toolResultTruncationAttempted) {
               const contextWindowTokens = ctxInfo.tokens;
-              const toolResultMaxChars = resolveLiveToolResultMaxChars({
+              const toolResultBudgets = resolveLiveToolResultBudgets({
                 contextWindowTokens,
                 cfg: params.config,
                 agentId: sessionAgentId,
               });
+              const toolResultMaxChars = Math.min(
+                toolResultBudgets.estimatedMaxChars,
+                toolResultBudgets.physicalMaxChars,
+              );
               const hasOversized = attempt.messagesSnapshot
                 ? sessionLikelyHasOversizedToolResults({
                     messages: attempt.messagesSnapshot,
                     contextWindowTokens,
-                    maxCharsOverride: toolResultMaxChars,
+                    maxCharsOverride: toolResultBudgets,
                   })
                 : false;
 
@@ -3012,7 +3017,7 @@ async function runEmbeddedAgentInternal(
                 const truncResult = await truncateOversizedToolResultsInSession({
                   sessionFile: activeSessionFile,
                   contextWindowTokens,
-                  maxCharsOverride: toolResultMaxChars,
+                  maxCharsOverride: toolResultBudgets,
                   sessionId: activeSessionId,
                   sessionKey: params.sessionKey,
                   agentId: sessionAgentId,

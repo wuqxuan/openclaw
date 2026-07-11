@@ -27,6 +27,7 @@ let sessionLikelyHasOversizedToolResults: typeof import("./tool-result-truncatio
 let estimateToolResultReductionPotential: typeof import("./tool-result-truncation.js").estimateToolResultReductionPotential;
 let DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS: typeof import("./tool-result-truncation.js").DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS;
 let resolveLiveToolResultMaxChars: typeof import("./tool-result-truncation.js").resolveLiveToolResultMaxChars;
+let resolveLiveToolResultBudgets: typeof import("./tool-result-truncation.js").resolveLiveToolResultBudgets;
 let resolveLiveToolResultAggregateMaxChars: typeof import("./tool-result-truncation.js").resolveLiveToolResultAggregateMaxChars;
 let createToolResultPromptProjectionState: typeof import("./tool-result-truncation.js").createToolResultPromptProjectionState;
 let tmpDir: string | undefined;
@@ -47,6 +48,7 @@ async function loadFreshToolResultTruncationModuleForTest() {
     estimateToolResultReductionPotential,
     DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
     resolveLiveToolResultMaxChars,
+    resolveLiveToolResultBudgets,
     resolveLiveToolResultAggregateMaxChars,
     createToolResultPromptProjectionState,
   } = await import("./tool-result-truncation.js"));
@@ -434,6 +436,84 @@ describe("truncateToolResultMessage", () => {
     expect(Number.isFinite(blocks[1].text.length)).toBe(true);
     expect(blocks[1].text.length).toBeLessThan(8000);
   });
+
+  it("preserves configured physical ceilings for dense CJK", () => {
+    // 5000 CJK physical chars: estimated = 20000. Token-share budget 16000 would
+    // alone keep ~4000 physical, but physical config ceiling of 8000 must still
+    // allow the full 5000 physical characters (config contract is UTF-16 chars).
+    const cjkText = "你".repeat(5000);
+    const msg: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "read",
+      content: [{ type: "text", text: cjkText }],
+      isError: false,
+      timestamp: nextTimestamp(),
+    };
+    const result = truncateToolResultMessage(
+      msg,
+      { estimatedMaxChars: 16_000, physicalMaxChars: 8_000 },
+      {
+        suffix: "\n\n[persist-truncated]",
+        minKeepChars: 2_000,
+      },
+    );
+    // Estimated budget forces truncation (~4000 physical), physical ceiling 8000 is looser.
+    expect(result.role).toBe("toolResult");
+    if (result.role !== "toolResult") {
+      throw new Error("expected toolResult");
+    }
+    const kept = getFirstToolResultText(result);
+    expect(kept.length).toBeLessThan(cjkText.length);
+    expect(kept.length).toBeLessThanOrEqual(5_000);
+    // Must not collapse to ~config/4 (2000) as if config were estimated chars.
+    expect(kept.length).toBeGreaterThan(2_500);
+  });
+
+  it("keeps full CJK payload under a loose estimated budget within physical config", () => {
+    // 3000 CJK physical: estimated 12000. estimated budget 32000 and physical 8000
+    // both allow the full payload — no truncation.
+    const cjkText = "你".repeat(3000);
+    const msg: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "read",
+      content: [{ type: "text", text: cjkText }],
+      isError: false,
+      timestamp: nextTimestamp(),
+    };
+    const result = truncateToolResultMessage(msg, {
+      estimatedMaxChars: 32_000,
+      physicalMaxChars: 8_000,
+    });
+    expect(result).toBe(msg);
+  });
+
+  it("clamps minKeep to the adjusted CJK physical allocation under small caps", () => {
+    // Small estimated budget: dense CJK physical allocation ≈ 1000/4 = 250.
+    // Without clamping, minKeepChars=2000 would retain far above the budget.
+    const cjkText = "你".repeat(4_000);
+    const msg: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "read",
+      content: [{ type: "text", text: cjkText }],
+      isError: false,
+      timestamp: nextTimestamp(),
+    };
+    const result = truncateToolResultMessage(msg, 1_000, {
+      suffix: "\n\n[t]",
+      minKeepChars: 2_000,
+    });
+    expect(result.role).toBe("toolResult");
+    if (result.role !== "toolResult") {
+      throw new Error("expected toolResult");
+    }
+    const kept = getFirstToolResultText(result);
+    expect(kept.length).toBeLessThan(cjkText.length);
+    // Physical keep should track ~estimated/4, not the unclamped 2000 floor.
+    expect(kept.length).toBeLessThanOrEqual(1_200);
+  });
 });
 
 describe("calculateMaxToolResultChars", () => {
@@ -483,6 +563,35 @@ describe("calculateMaxToolResultChars", () => {
       agentId: "writer",
     });
     expect(result).toBe(24_000);
+  });
+
+  it("separates estimated token-share budget from physical config ceiling", () => {
+    const budgets = resolveLiveToolResultBudgets({
+      contextWindowTokens: 128_000,
+      cfg: {
+        agents: {
+          defaults: {
+            contextLimits: {
+              toolResultMaxChars: 8_000,
+            },
+          },
+        },
+      },
+    });
+    // 128k * 0.3 * 4 = 153600 estimated share
+    expect(budgets.estimatedMaxChars).toBe(Math.floor(128_000 * 0.3) * 4);
+    expect(budgets.physicalMaxChars).toBe(8_000);
+    // Single-number helper still reports the tighter latin-equivalent effective cap.
+    expect(
+      resolveLiveToolResultMaxChars({
+        contextWindowTokens: 128_000,
+        cfg: {
+          agents: {
+            defaults: { contextLimits: { toolResultMaxChars: 8_000 } },
+          },
+        },
+      }),
+    ).toBe(8_000);
   });
 
   it.each([

@@ -355,6 +355,7 @@ import {
   installToolResultContextGuard,
 } from "../tool-result-context-guard.js";
 import {
+  resolveLiveToolResultBudgets,
   resolveLiveToolResultMaxChars,
   resolveLiveToolResultAggregateMaxChars,
   truncateOversizedToolResultsInMessages,
@@ -2732,11 +2733,15 @@ export async function runEmbeddedAttempt(
             DEFAULT_CONTEXT_TOKENS,
         ),
       );
-      const toolResultMaxCharsForGuard = resolveLiveToolResultMaxChars({
+      const toolResultBudgetsForGuard = resolveLiveToolResultBudgets({
         contextWindowTokens: contextTokenBudgetForGuard,
         cfg: params.config,
         agentId: sessionAgentId,
       });
+      const toolResultMaxCharsForGuard = Math.min(
+        toolResultBudgetsForGuard.estimatedMaxChars,
+        toolResultBudgetsForGuard.physicalMaxChars,
+      );
       const midTurnPrecheckEnabled =
         params.config?.agents?.defaults?.compaction?.midTurnPrecheck?.enabled === true;
       let pendingMidTurnPrecheckRequest: MidTurnPrecheckRequest | null = null;
@@ -4058,15 +4063,19 @@ export async function runEmbeddedAttempt(
         };
         if (request.route === "truncate_tool_results_only") {
           const contextTokenBudget = params.contextTokenBudget ?? DEFAULT_CONTEXT_TOKENS;
-          const toolResultMaxChars = resolveLiveToolResultMaxChars({
+          const toolResultBudgets = resolveLiveToolResultBudgets({
             contextWindowTokens: contextTokenBudget,
             cfg: params.config,
             agentId: sessionAgentId,
           });
+          const toolResultMaxChars = Math.min(
+            toolResultBudgets.estimatedMaxChars,
+            toolResultBudgets.physicalMaxChars,
+          );
           const truncationResult = truncateOversizedToolResultsInSessionManager({
             sessionManager: activeSessionManager,
             contextWindowTokens: contextTokenBudget,
-            maxCharsOverride: toolResultMaxChars,
+            maxCharsOverride: toolResultBudgets,
             sessionFile: params.sessionFile,
             sessionId: params.sessionId,
             sessionKey: params.sessionKey,
@@ -4396,20 +4405,24 @@ export async function runEmbeddedAttempt(
           }
           prePromptMessageCount = activeSession.messages.length;
           const contextTokenBudget = params.contextTokenBudget ?? DEFAULT_CONTEXT_TOKENS;
-          const promptToolResultMaxChars = resolveLiveToolResultMaxChars({
+          const promptToolResultBudgets = resolveLiveToolResultBudgets({
             contextWindowTokens: contextTokenBudget,
             cfg: params.config,
             agentId: sessionAgentId,
           });
+          const promptToolResultMaxChars = Math.min(
+            promptToolResultBudgets.estimatedMaxChars,
+            promptToolResultBudgets.physicalMaxChars,
+          );
           const promptToolResultAggregateMaxChars = resolveLiveToolResultAggregateMaxChars({
             contextWindowTokens: contextTokenBudget,
-            perResultMaxChars: promptToolResultMaxChars,
+            perResultMaxChars: promptToolResultBudgets.estimatedMaxChars,
           });
           let promptHistoryMessages = activeSession.messages;
           const promptToolResultTruncation = truncateOversizedToolResultsInMessages(
             activeSession.messages,
             contextTokenBudget,
-            promptToolResultMaxChars,
+            promptToolResultBudgets,
             promptToolResultAggregateMaxChars,
             cloneToolResultPromptProjectionState(toolResultPromptProjectionState),
           );
@@ -4943,16 +4956,20 @@ export async function runEmbeddedAttempt(
             );
           }
           if (preemptiveCompaction?.route === "truncate_tool_results_only") {
-            const toolResultMaxChars = resolveLiveToolResultMaxChars({
+            const toolResultBudgets = resolveLiveToolResultBudgets({
               contextWindowTokens: contextTokenBudget,
               cfg: params.config,
               agentId: sessionAgentId,
             });
+            const toolResultMaxChars = Math.min(
+              toolResultBudgets.estimatedMaxChars,
+              toolResultBudgets.physicalMaxChars,
+            );
             const truncationResult = await withOwnedSessionWriteLock(() =>
               truncateOversizedToolResultsInSessionManager({
                 sessionManager: activeSessionManager,
                 contextWindowTokens: contextTokenBudget,
-                maxCharsOverride: toolResultMaxChars,
+                maxCharsOverride: toolResultBudgets,
                 sessionFile: params.sessionFile,
                 sessionId: params.sessionId,
                 sessionKey: params.sessionKey,
@@ -5037,7 +5054,7 @@ export async function runEmbeddedAttempt(
                   const providerPromptHistoryTruncation = truncateOversizedToolResultsInMessages(
                     messages,
                     contextTokenBudget,
-                    promptToolResultMaxChars,
+                    promptToolResultBudgets,
                     promptToolResultAggregateMaxChars,
                     toolResultPromptProjectionState,
                   );

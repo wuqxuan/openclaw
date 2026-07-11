@@ -20,7 +20,7 @@ import {
   type PersistedUserTurnMessage,
   type UserTurnTranscriptRecorder,
 } from "../sessions/user-turn-transcript.js";
-import { resolveLiveToolResultMaxChars } from "./embedded-agent-runner/tool-result-truncation.js";
+import { resolveLiveToolResultBudgets } from "./embedded-agent-runner/tool-result-truncation.js";
 import type { AgentMessage } from "./runtime/index.js";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 import type { SessionManager } from "./sessions/index.js";
@@ -160,9 +160,9 @@ export function guardSessionManager(
     allowedToolNames: opts?.allowedToolNames,
     beforeMessageWriteHook: beforeMessageWrite,
     redactLoggingConfig: opts?.config?.logging,
-    maxToolResultChars:
+    toolResultCharBudgets:
       typeof opts?.contextWindowTokens === "number"
-        ? resolveLiveToolResultMaxChars({
+        ? resolveLiveToolResultBudgets({
             contextWindowTokens: opts.contextWindowTokens,
             cfg: opts.config,
             agentId: opts.agentId,

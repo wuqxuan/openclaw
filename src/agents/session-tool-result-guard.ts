@@ -25,6 +25,7 @@ import { isTranscriptOnlyOpenClawAssistantModel } from "../shared/transcript-onl
 import { formatContextLimitTruncationNotice } from "./embedded-agent-runner/context-truncation-notice.js";
 import {
   DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
+  type ToolResultCharBudgets,
   truncateToolResultMessage,
 } from "./embedded-agent-runner/tool-result-truncation.js";
 import type { AgentMessage } from "./runtime/index.js";
@@ -42,11 +43,11 @@ import { extractToolCallsFromAssistant, extractToolResultId } from "./tool-call-
  * Returns the original message if under the limit, or a new message with
  * truncated text blocks otherwise.
  */
-function capToolResultSize(msg: AgentMessage, maxChars: number): AgentMessage {
+function capToolResultSize(msg: AgentMessage, budgets: ToolResultCharBudgets): AgentMessage {
   if ((msg as { role?: string }).role !== "toolResult") {
     return msg;
   }
-  return truncateToolResultMessage(msg, maxChars, {
+  return truncateToolResultMessage(msg, budgets, {
     suffix: (truncatedChars) => formatContextLimitTruncationNotice(truncatedChars),
     minKeepChars: 2_000,
   });
@@ -56,6 +57,24 @@ function resolveMaxToolResultChars(opts?: { maxToolResultChars?: number }): numb
   return resolveIntegerOption(opts?.maxToolResultChars, DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS, {
     min: 1,
   });
+}
+
+function resolveToolResultCharBudgets(opts?: {
+  maxToolResultChars?: number;
+  toolResultCharBudgets?: ToolResultCharBudgets;
+}): ToolResultCharBudgets {
+  if (opts?.toolResultCharBudgets) {
+    return {
+      estimatedMaxChars: Math.max(1, Math.floor(opts.toolResultCharBudgets.estimatedMaxChars)),
+      physicalMaxChars: Math.max(1, Math.floor(opts.toolResultCharBudgets.physicalMaxChars)),
+    };
+  }
+  const single = resolveMaxToolResultChars(opts);
+  // Legacy single-number path: estimated-only (physical open).
+  return {
+    estimatedMaxChars: single,
+    physicalMaxChars: Number.MAX_SAFE_INTEGER,
+  };
 }
 
 type UserAgentMessage = Extract<AgentMessage, { role: "user" }>;
@@ -532,10 +551,10 @@ function capToolResultDetails(
 
 function capToolResultForPersistence(
   msg: AgentMessage,
-  maxChars: number,
+  budgets: ToolResultCharBudgets,
   redactionConfig?: ToolResultDetailRedactionConfig,
 ): AgentMessage {
-  return capToolResultDetails(capToolResultSize(msg, maxChars), redactionConfig);
+  return capToolResultDetails(capToolResultSize(msg, budgets), redactionConfig);
 }
 
 function normalizePersistedToolResultName(
@@ -615,6 +634,7 @@ export function installSessionToolResultGuard(
     ) => PluginHookBeforeMessageWriteResult | undefined;
     redactLoggingConfig?: ToolResultDetailRedactionConfig;
     maxToolResultChars?: number;
+    toolResultCharBudgets?: ToolResultCharBudgets;
     suppressNextUserMessagePersistence?: boolean;
     suppressTranscriptOnlyAssistantPersistence?: boolean;
     suppressAssistantErrorPersistence?: boolean;
@@ -657,7 +677,7 @@ export function installSessionToolResultGuard(
   const beforeWrite = opts?.beforeMessageWriteHook;
   const toolResultTransformerMayMutate = opts?.transformToolResultForPersistence !== undefined;
   const redactionConfig = opts?.redactLoggingConfig;
-  const maxToolResultChars = resolveMaxToolResultChars(opts);
+  const toolResultCharBudgets = resolveToolResultCharBudgets(opts);
   const transcriptSeqByEntryId: TranscriptSeqByEntryId = new Map();
   let suppressNextUserMessagePersistence = opts?.suppressNextUserMessagePersistence === true;
 
@@ -736,7 +756,7 @@ export function installSessionToolResultGuard(
         const flushed = applyBeforeWriteHook(transformed);
         if (flushed) {
           appendMessageAndCacheTranscriptSeq(
-            capToolResultForPersistence(flushed.message, maxToolResultChars, redactionConfig),
+            capToolResultForPersistence(flushed.message, toolResultCharBudgets, redactionConfig),
             {
               invalidateSerializedPrefixCache:
                 persistedSynthetic !== synthetic ||
@@ -784,7 +804,7 @@ export function installSessionToolResultGuard(
       const persistedToolResult = persistMessage(normalizedToolResult);
       const capped = capToolResultForPersistence(
         persistedToolResult,
-        maxToolResultChars,
+        toolResultCharBudgets,
         redactionConfig,
       );
       const transformed = persistToolResult(capped, {
@@ -797,7 +817,7 @@ export function installSessionToolResultGuard(
         return undefined;
       }
       return appendMessageAndCacheTranscriptSeq(
-        capToolResultForPersistence(persisted.message, maxToolResultChars, redactionConfig),
+        capToolResultForPersistence(persisted.message, toolResultCharBudgets, redactionConfig),
         {
           invalidateSerializedPrefixCache:
             callerInvalidatesCache ||

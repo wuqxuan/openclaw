@@ -66,6 +66,8 @@ const aggregateToolResultRecoveryWarnings = new Set<string>();
 type ToolResultTruncationOptions = {
   suffix?: string | ((truncatedChars: number) => string);
   minKeepChars?: number;
+  /** Optional physical UTF-16 ceiling when maxChars is a single estimated budget. */
+  physicalMaxChars?: number;
 };
 
 const DEFAULT_SUFFIX = (truncatedChars: number) =>
@@ -245,14 +247,38 @@ export function truncateToolResultText(
 }
 
 /**
+ * Dual-unit live tool-result budgets.
+ *
+ * - `estimatedMaxChars`: automatic token-share budget (`maxTokens * 4`). Compare
+ *   with `getToolResultTextLength` / `estimateStringChars` so dense CJK is not
+ *   under-counted.
+ * - `physicalMaxChars`: UTF-16 character ceiling from configured
+ *   `toolResultMaxChars` or the auto hard-cap ladder. Compare with physical
+ *   `text.length` so existing config stays a physical-character contract.
+ */
+export type ToolResultCharBudgets = {
+  estimatedMaxChars: number;
+  physicalMaxChars: number;
+};
+
+/**
+ * Token-share budget only (estimated chars). Does not apply the physical hard cap.
+ */
+export function calculateTokenShareEstimatedChars(contextWindowTokens: number): number {
+  if (!Number.isFinite(contextWindowTokens)) {
+    return 1;
+  }
+  const maxTokens = Math.floor(Math.max(0, contextWindowTokens) * MAX_TOOL_RESULT_CONTEXT_SHARE);
+  return Math.max(1, maxTokens * 4);
+}
+
+/**
  * Calculate the maximum allowed characters for a single tool result
  * based on the model's context window tokens.
  *
- * The budget uses a flat 4 chars/token conversion to derive a character cap
- * from the token share. The comparison side (`getToolResultTextLength`) uses
- * `estimateStringChars` for CJK-aware weighting, so dense CJK content inflates
- * the measured length and triggers truncation at a lower physical character
- * count — correct because CJK text consumes ~1 token per character.
+ * Returns `min(tokenShareEstimated, physicalHardCap)` for doctor/display and
+ * latin-equivalent effective ceilings. Runtime truncation uses
+ * {@link resolveLiveToolResultBudgets} so estimated and physical units stay separate.
  */
 export function calculateMaxToolResultChars(contextWindowTokens: number): number {
   return calculateMaxToolResultCharsWithCap(
@@ -279,22 +305,40 @@ export function calculateMaxToolResultCharsWithCap(
   contextWindowTokens: number,
   hardCapChars: number,
 ): number {
-  const maxTokens = Math.floor(contextWindowTokens * MAX_TOOL_RESULT_CONTEXT_SHARE);
-  // Token-to-char budget: the flat 4x factor produces an estimated-char cap.
-  // getToolResultTextLength uses estimateStringChars so CJK content measures
-  // larger against this cap and triggers truncation at the correct token share.
-  const maxChars = maxTokens * 4;
+  // Latin-equivalent effective ceiling for doctor/help: both inputs are treated
+  // as comparable numbers. Live truncation uses dual budgets instead.
+  const maxChars = calculateTokenShareEstimatedChars(contextWindowTokens);
   return Math.min(maxChars, Math.max(1, hardCapChars));
 }
 
+export function resolveLiveToolResultBudgets(params: {
+  contextWindowTokens: number;
+  cfg?: OpenClawConfig;
+  agentId?: string | null;
+}): ToolResultCharBudgets {
+  const configuredCap = resolveAgentContextLimits(params.cfg, params.agentId)?.toolResultMaxChars;
+  const physicalMaxChars = Math.max(
+    1,
+    Math.floor(configuredCap ?? resolveAutoLiveToolResultMaxChars(params.contextWindowTokens)),
+  );
+  return {
+    estimatedMaxChars: calculateTokenShareEstimatedChars(params.contextWindowTokens),
+    physicalMaxChars,
+  };
+}
+
+/**
+ * Single-number resolver kept for mid-turn precheck / doctor-style callers.
+ * Prefer {@link resolveLiveToolResultBudgets} for truncation so physical config
+ * ceilings are not mixed into the estimated token-share unit.
+ */
 export function resolveLiveToolResultMaxChars(params: {
   contextWindowTokens: number;
   cfg?: OpenClawConfig;
   agentId?: string | null;
 }): number {
-  const configuredCap = resolveAgentContextLimits(params.cfg, params.agentId)?.toolResultMaxChars;
-  const cap = configuredCap ?? resolveAutoLiveToolResultMaxChars(params.contextWindowTokens);
-  return calculateMaxToolResultCharsWithCap(params.contextWindowTokens, cap);
+  const budgets = resolveLiveToolResultBudgets(params);
+  return Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars);
 }
 
 export function resolveLiveToolResultAggregateMaxChars(params: {
@@ -303,15 +347,19 @@ export function resolveLiveToolResultAggregateMaxChars(params: {
   cfg?: OpenClawConfig;
   agentId?: string | null;
 }): number {
+  const budgets = resolveLiveToolResultBudgets({
+    contextWindowTokens: params.contextWindowTokens,
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
+  // Aggregate recovery stays in estimated-char space (token pressure). The
+  // per-result baseline matches the latin-equivalent effective ceiling
+  // (min of token-share and physical hard cap) so aggregate pressure engages
+  // at the same thresholds as before the dual-budget split.
   const perResultMaxChars = Math.max(
     1,
     Math.floor(
-      params.perResultMaxChars ??
-        resolveLiveToolResultMaxChars({
-          contextWindowTokens: params.contextWindowTokens,
-          cfg: params.cfg,
-          agentId: params.agentId,
-        }),
+      params.perResultMaxChars ?? Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     ),
   );
   const contextWindowTokens = Number.isFinite(params.contextWindowTokens)
@@ -329,10 +377,7 @@ export function resolveLiveToolResultAggregateMaxChars(params: {
   );
 }
 
-/**
- * Get the total character count of text content blocks in a tool result message.
- */
-export function getToolResultTextLength(msg: AgentMessage): number {
+function sumToolResultText(msg: AgentMessage, measure: (text: string) => number): number {
   if (!msg || (msg as { role?: string }).role !== "toolResult") {
     return 0;
   }
@@ -345,10 +390,7 @@ export function getToolResultTextLength(msg: AgentMessage): number {
     if (isToolResultTextBlock(block)) {
       const text = block.text;
       if (typeof text === "string") {
-        // Weight CJK/non-Latin so this estimated-char total is comparable to
-        // token-derived maxChars budgets (maxTokens * 4). Physical UTF-16 length
-        // alone undercounts CJK token cost by up to ~4x.
-        totalLength += estimateStringChars(text);
+        totalLength += measure(text);
       }
     }
   }
@@ -356,33 +398,71 @@ export function getToolResultTextLength(msg: AgentMessage): number {
 }
 
 /**
- * Truncate a tool result message's text content blocks to fit within maxChars.
- * Returns a new message (does not mutate the original).
+ * Physical UTF-16 length of tool-result text blocks (config ceiling unit).
+ */
+export function getToolResultPhysicalTextLength(msg: AgentMessage): number {
+  return sumToolResultText(msg, (text) => text.length);
+}
+
+/**
+ * CJK-weighted estimated length of tool-result text blocks (token-share unit).
+ * Alias kept as `getToolResultTextLength` for existing call sites.
+ */
+export function getToolResultTextLength(msg: AgentMessage): number {
+  return sumToolResultText(msg, estimateStringChars);
+}
+
+function normalizeToolResultCharBudgets(
+  maxChars: number | ToolResultCharBudgets,
+  options: ToolResultTruncationOptions = {},
+): ToolResultCharBudgets {
+  if (typeof maxChars === "object" && maxChars !== null) {
+    return {
+      estimatedMaxChars: Math.max(1, Math.floor(maxChars.estimatedMaxChars)),
+      physicalMaxChars: Math.max(1, Math.floor(maxChars.physicalMaxChars)),
+    };
+  }
+  const estimatedMaxChars = Math.max(1, Math.floor(maxChars));
+  // Single number (tests / legacy): treat as estimated budget only so CJK
+  // weighting applies. Physical ceiling is unlimited unless options override.
+  const physicalMaxChars = Math.max(
+    1,
+    Math.floor(options.physicalMaxChars ?? Number.MAX_SAFE_INTEGER),
+  );
+  return { estimatedMaxChars, physicalMaxChars };
+}
+
+/**
+ * Truncate a tool result message's text content blocks to fit within budgets.
+ * `maxChars` may be a single estimated-char budget (legacy/tests) or dual
+ * {@link ToolResultCharBudgets}. Returns a new message (does not mutate).
  */
 export function truncateToolResultMessage(
   msg: AgentMessage,
-  maxChars: number,
+  maxChars: number | ToolResultCharBudgets,
   options: ToolResultTruncationOptions = {},
 ): AgentMessage {
+  const budgets = normalizeToolResultCharBudgets(maxChars, options);
+  const { estimatedMaxChars, physicalMaxChars } = budgets;
+  // minKeep is resolved against the tighter physical-facing budget so small
+  // estimated allocations are not forced upward past the CJK-adjusted keep.
+  const minKeepReference = Math.min(estimatedMaxChars, physicalMaxChars);
+  const requestedMinKeep = options.minKeepChars ?? MIN_KEEP_CHARS;
   const suffixFactory = resolveSuffixFactory(options.suffix);
-  const minKeepChars = resolveEffectiveMinKeepChars({
-    maxChars,
-    minKeepChars: options.minKeepChars ?? MIN_KEEP_CHARS,
-    suffixFactory,
-  });
   const content = (msg as { content?: unknown }).content;
   if (!Array.isArray(content)) {
     return msg;
   }
 
-  // Calculate total text size
-  const totalTextChars = getToolResultTextLength(msg);
-  if (totalTextChars <= maxChars) {
+  const totalEstimatedChars = getToolResultTextLength(msg);
+  const totalPhysicalChars = getToolResultPhysicalTextLength(msg);
+  if (totalEstimatedChars <= estimatedMaxChars && totalPhysicalChars <= physicalMaxChars) {
     return msg;
   }
 
-  // Distribute the estimated-char budget proportionally among text blocks,
-  // then convert each share back to a physical UTF-16 slice budget.
+  // Distribute budgets proportionally, then convert estimated shares to physical
+  // UTF-16 slice budgets. Clamp min-keep to each block's adjusted allocation so
+  // dense CJK under small caps cannot retain more estimated chars than budgeted.
   const newContent = content.map((block: unknown) => {
     if (!isToolResultTextBlock(block)) {
       return block; // Keep non-text blocks (images) as-is
@@ -391,24 +471,40 @@ export function truncateToolResultMessage(
     if (typeof textBlock.text !== "string" || textBlock.text.length === 0) {
       return block;
     }
-    // CJK-aware proportional budget: estimateStringChars inflates CJK chars so
-    // they consume a proportional share of the token-derived character budget.
     const blockEstimatedChars = estimateStringChars(textBlock.text);
-    const blockShare = blockEstimatedChars / totalTextChars;
-    // Convert the estimated-char budget back to a physical-char budget that
-    // truncateToolResultText can use for UTF-16 slicing. Dense CJK text gets a
-    // smaller physical budget (≈ budget/4) because each char costs ~1 token;
-    // pure ASCII keeps budget ≈ proportionalEstimatedBudget.
-    const inflationRatio = blockEstimatedChars / textBlock.text.length;
-    const proportionalEstimatedBudget = Math.floor(maxChars * blockShare);
-    const physicalBudget = Math.floor(proportionalEstimatedBudget / Math.max(1, inflationRatio));
-    const blockBudget = Math.max(
-      1,
-      Math.min(textBlock.text.length, Math.max(minKeepChars, physicalBudget)),
+    const blockPhysicalChars = textBlock.text.length;
+    const estimatedShare = totalEstimatedChars > 0 ? blockEstimatedChars / totalEstimatedChars : 0;
+    const physicalShare = totalPhysicalChars > 0 ? blockPhysicalChars / totalPhysicalChars : 0;
+    const inflationRatio = blockEstimatedChars / Math.max(1, blockPhysicalChars);
+    const proportionalEstimatedBudget = Math.floor(estimatedMaxChars * estimatedShare);
+    const physicalFromEstimated = Math.floor(
+      proportionalEstimatedBudget / Math.max(1, inflationRatio),
     );
+    const physicalFromCap = Math.floor(physicalMaxChars * physicalShare);
+    // Keep short marker/status blocks intact; large siblings absorb the cut.
+    // Flooring proportional shares otherwise shreds e.g. "Image reading is disabled."
+    // next to a multi-KB payload under a shared estimated budget.
+    const isSmallSiblingBlock =
+      blockPhysicalChars <= 512 &&
+      totalEstimatedChars > 0 &&
+      blockEstimatedChars / totalEstimatedChars <= 0.05 &&
+      blockPhysicalChars <= physicalFromCap;
+    if (isSmallSiblingBlock) {
+      return block;
+    }
+    const rawPhysicalBudget = Math.max(
+      1,
+      Math.min(blockPhysicalChars, physicalFromEstimated, physicalFromCap),
+    );
+    const effectiveMinKeep = resolveEffectiveMinKeepChars({
+      maxChars: rawPhysicalBudget,
+      minKeepChars: Math.min(requestedMinKeep, minKeepReference, rawPhysicalBudget),
+      suffixFactory,
+    });
+    const blockBudget = rawPhysicalBudget;
     const truncatedText = truncateToolResultText(textBlock.text, blockBudget, {
       suffix: suffixFactory,
-      minKeepChars,
+      minKeepChars: effectiveMinKeep,
     });
     const nextBlock = Object.assign({}, textBlock, { text: truncatedText });
     if (typeof textBlock.content === "string") {
@@ -543,10 +639,35 @@ function formatAggregateElisionText(
  * This is used as a pre-emptive guard before sending messages to the LLM,
  * without modifying the session file.
  */
+function resolveBudgetsForContext(params: {
+  contextWindowTokens: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
+  cfg?: OpenClawConfig;
+  agentId?: string | null;
+}): ToolResultCharBudgets {
+  if (params.maxCharsOverride != null && typeof params.maxCharsOverride === "object") {
+    return normalizeToolResultCharBudgets(params.maxCharsOverride);
+  }
+  if (typeof params.maxCharsOverride === "number") {
+    // Legacy single number: estimated-only budget (tests / callers that have not
+    // migrated to dual budgets). Physical ceiling is left open so CJK weighting
+    // on the estimated side is not re-clamped by the same number as physical.
+    return {
+      estimatedMaxChars: Math.max(1, Math.floor(params.maxCharsOverride)),
+      physicalMaxChars: Number.MAX_SAFE_INTEGER,
+    };
+  }
+  return resolveLiveToolResultBudgets({
+    contextWindowTokens: params.contextWindowTokens,
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
+}
+
 export function truncateOversizedToolResultsInMessages(
   messages: AgentMessage[],
   contextWindowTokens: number,
-  maxCharsOverride?: number,
+  maxCharsOverride?: number | ToolResultCharBudgets,
   aggregateMaxCharsOverride?: number,
   projectionState?: ToolResultPromptProjectionState,
 ): {
@@ -556,13 +677,13 @@ export function truncateOversizedToolResultsInMessages(
   aggregatePressureEngaged: boolean;
   aggregateBudgetChars: number;
 } {
-  const maxChars = Math.max(
-    1,
-    maxCharsOverride ?? calculateMaxToolResultChars(contextWindowTokens),
-  );
+  const budgets = resolveBudgetsForContext({
+    contextWindowTokens,
+    maxCharsOverride,
+  });
   const aggregateBudgetChars = calculateRecoveryAggregateToolResultChars(
     contextWindowTokens,
-    maxChars,
+    Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     aggregateMaxCharsOverride,
   );
   const projectionKeys = projectionState
@@ -595,7 +716,7 @@ export function truncateOversizedToolResultsInMessages(
   });
   const plan = buildToolResultReplacementPlan({
     branch,
-    maxChars,
+    budgets,
     aggregateBudgetChars,
     minKeepChars: RECOVERY_MIN_KEEP_CHARS,
     protectTrailingToolResults: Boolean(projectionState),
@@ -990,12 +1111,13 @@ function clearToolResultText(
 
 function buildOversizedToolResultReplacements(params: {
   branch: ToolResultBranchEntry[];
-  maxChars: number;
+  budgets: ToolResultCharBudgets;
   minKeepChars?: number;
   protectedEntryIds?: Set<string>;
 }): ToolResultReplacement[] {
   const minKeepChars = params.minKeepChars ?? MIN_KEEP_CHARS;
   const replacements: ToolResultReplacement[] = [];
+  const { estimatedMaxChars, physicalMaxChars } = params.budgets;
 
   for (const entry of params.branch) {
     if (entry.type !== "message" || !entry.message) {
@@ -1005,7 +1127,9 @@ function buildOversizedToolResultReplacements(params: {
     if ((msg as { role?: string }).role !== "toolResult") {
       continue;
     }
-    if (getToolResultTextLength(msg) <= params.maxChars) {
+    const estimatedLen = getToolResultTextLength(msg);
+    const physicalLen = getToolResultPhysicalTextLength(msg);
+    if (estimatedLen <= estimatedMaxChars && physicalLen <= physicalMaxChars) {
       continue;
     }
     const replacementMinKeepChars = params.protectedEntryIds?.has(entry.id)
@@ -1013,10 +1137,14 @@ function buildOversizedToolResultReplacements(params: {
       : minKeepChars;
     const spillMarkers = resolveAggregateElisionMarkers(msg);
     const suffixFactory = spillMarkers?.truncationSuffix;
-    const maxChars = Math.max(params.maxChars, suffixFactory?.(1).length ?? 0);
+    const suffixFloor = suffixFactory?.(1).length ?? 0;
+    const budgets: ToolResultCharBudgets = {
+      estimatedMaxChars: Math.max(estimatedMaxChars, suffixFloor),
+      physicalMaxChars: Math.max(physicalMaxChars, suffixFloor),
+    };
     replacements.push({
       entryId: entry.id,
-      message: truncateToolResultMessage(msg, maxChars, {
+      message: truncateToolResultMessage(msg, budgets, {
         minKeepChars: replacementMinKeepChars,
         ...(suffixFactory ? { suffix: suffixFactory } : {}),
       }),
@@ -1074,7 +1202,7 @@ function applyToolResultReplacementsToBranch(
 
 function buildToolResultReplacementPlan(params: {
   branch: ToolResultBranchEntry[];
-  maxChars: number;
+  budgets: ToolResultCharBudgets;
   aggregateBudgetChars: number;
   minKeepChars?: number;
   protectTrailingToolResults?: boolean;
@@ -1092,7 +1220,7 @@ function buildToolResultReplacementPlan(params: {
     : undefined;
   const oversizedReplacements = buildOversizedToolResultReplacements({
     branch: params.branch,
-    maxChars: params.maxChars,
+    budgets: params.budgets,
     minKeepChars,
     protectedEntryIds,
   });
@@ -1129,17 +1257,17 @@ function buildToolResultReplacementPlan(params: {
 export function estimateToolResultReductionPotential(params: {
   messages: AgentMessage[];
   contextWindowTokens: number;
-  maxCharsOverride?: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
   aggregateMaxCharsOverride?: number;
 }): ToolResultReductionPotential {
   const { messages, contextWindowTokens } = params;
-  const maxChars = Math.max(
-    1,
-    params.maxCharsOverride ?? calculateMaxToolResultChars(contextWindowTokens),
-  );
+  const budgets = resolveBudgetsForContext({
+    contextWindowTokens,
+    maxCharsOverride: params.maxCharsOverride,
+  });
   const aggregateBudgetChars = calculateRecoveryAggregateToolResultChars(
     contextWindowTokens,
-    maxChars,
+    Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     params.aggregateMaxCharsOverride,
   );
   const branch = messages.map((message, index) => ({
@@ -1163,14 +1291,14 @@ export function estimateToolResultReductionPotential(params: {
   }
   const plan = buildToolResultReplacementPlan({
     branch,
-    maxChars,
+    budgets,
     aggregateBudgetChars,
     minKeepChars: RECOVERY_MIN_KEEP_CHARS,
   });
   const maxReducibleChars = plan.oversizedReducibleChars + plan.aggregateReducibleChars;
 
   return {
-    maxChars,
+    maxChars: Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     aggregateBudgetChars,
     toolResultCount,
     totalToolResultChars,
@@ -1184,7 +1312,7 @@ export function estimateToolResultReductionPotential(params: {
 function truncateOversizedToolResultsInExistingSessionManager(params: {
   sessionManager: SessionManager;
   contextWindowTokens: number;
-  maxCharsOverride?: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
   aggregateMaxCharsOverride?: number;
   protectTrailingToolResults?: boolean;
   sessionFile?: string;
@@ -1193,13 +1321,14 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
   agentId?: string;
 }): { truncated: boolean; truncatedCount: number; reason?: string } {
   const { sessionManager, contextWindowTokens } = params;
-  const maxChars = Math.max(
-    1,
-    params.maxCharsOverride ?? calculateMaxToolResultChars(contextWindowTokens),
-  );
+  const budgets = resolveBudgetsForContext({
+    contextWindowTokens,
+    maxCharsOverride: params.maxCharsOverride,
+    agentId: params.agentId,
+  });
   const aggregateBudgetChars = calculateRecoveryAggregateToolResultChars(
     contextWindowTokens,
-    maxChars,
+    Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     params.aggregateMaxCharsOverride,
   );
   const branch = sessionManager.getBranch() as ToolResultBranchEntry[];
@@ -1210,7 +1339,7 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
 
   const plan = buildToolResultReplacementPlan({
     branch,
-    maxChars,
+    budgets,
     aggregateBudgetChars,
     minKeepChars: RECOVERY_MIN_KEEP_CHARS,
     protectTrailingToolResults: params.protectTrailingToolResults,
@@ -1246,7 +1375,7 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
   logToolResultSessionTruncation({
     rewrittenEntries: rewriteResult.rewrittenEntries,
     contextWindowTokens,
-    maxChars,
+    maxChars: Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     aggregateBudgetChars,
     oversizedReplacementCount: plan.oversizedReplacementCount,
     aggregateReplacementCount: plan.aggregateReplacementCount,
@@ -1265,7 +1394,7 @@ async function truncateOversizedToolResultsInTranscriptState(params: {
   state: TranscriptFileState;
   sessionFile: string;
   contextWindowTokens: number;
-  maxCharsOverride?: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
   aggregateMaxCharsOverride?: number;
   protectTrailingToolResults?: boolean;
   sessionId?: string;
@@ -1274,13 +1403,14 @@ async function truncateOversizedToolResultsInTranscriptState(params: {
   config?: SessionWriteLockAcquireTimeoutConfig;
 }): Promise<{ truncated: boolean; truncatedCount: number; reason?: string }> {
   const { state, contextWindowTokens } = params;
-  const maxChars = Math.max(
-    1,
-    params.maxCharsOverride ?? calculateMaxToolResultChars(contextWindowTokens),
-  );
+  const budgets = resolveBudgetsForContext({
+    contextWindowTokens,
+    maxCharsOverride: params.maxCharsOverride,
+    agentId: params.agentId,
+  });
   const aggregateBudgetChars = calculateRecoveryAggregateToolResultChars(
     contextWindowTokens,
-    maxChars,
+    Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     params.aggregateMaxCharsOverride,
   );
   const branch = state.getBranch() as ToolResultBranchEntry[];
@@ -1291,7 +1421,7 @@ async function truncateOversizedToolResultsInTranscriptState(params: {
 
   const plan = buildToolResultReplacementPlan({
     branch,
-    maxChars,
+    budgets,
     aggregateBudgetChars,
     minKeepChars: RECOVERY_MIN_KEEP_CHARS,
     protectTrailingToolResults: params.protectTrailingToolResults,
@@ -1332,7 +1462,7 @@ async function truncateOversizedToolResultsInTranscriptState(params: {
   logToolResultSessionTruncation({
     rewrittenEntries: rewriteResult.rewrittenEntries,
     contextWindowTokens,
-    maxChars,
+    maxChars: Math.min(budgets.estimatedMaxChars, budgets.physicalMaxChars),
     aggregateBudgetChars,
     oversizedReplacementCount: plan.oversizedReplacementCount,
     aggregateReplacementCount: plan.aggregateReplacementCount,
@@ -1350,7 +1480,7 @@ async function truncateOversizedToolResultsInTranscriptState(params: {
 export function truncateOversizedToolResultsInSessionManager(params: {
   sessionManager: SessionManager;
   contextWindowTokens: number;
-  maxCharsOverride?: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
   aggregateMaxCharsOverride?: number;
   protectTrailingToolResults?: boolean;
   sessionFile?: string;
@@ -1373,7 +1503,7 @@ export function truncateOversizedToolResultsInSessionManager(params: {
 export async function truncateOversizedToolResultsInSession(params: {
   sessionFile: string;
   contextWindowTokens: number;
-  maxCharsOverride?: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
   aggregateMaxCharsOverride?: number;
   protectTrailingToolResults?: boolean;
   sessionId?: string;
@@ -1413,7 +1543,7 @@ export async function truncateOversizedToolResultsInSession(params: {
 export function sessionLikelyHasOversizedToolResults(params: {
   messages: AgentMessage[];
   contextWindowTokens: number;
-  maxCharsOverride?: number;
+  maxCharsOverride?: number | ToolResultCharBudgets;
 }): boolean {
   const estimate = estimateToolResultReductionPotential(params);
   return estimate.oversizedCount > 0 || estimate.aggregateReducibleChars > 0;
