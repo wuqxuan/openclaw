@@ -180,6 +180,44 @@ describe("signal reply session init conflict retry", () => {
     }
   });
 
+  it("still performs the initial debounced flush after monitor abort", async () => {
+    // Accepted inbound work must get one initial flush even when shutdown aborts
+    // the lifecycle before the debounce timer fires (timer-backed flush is not
+    // owned by the active enqueue() awaiter).
+    dispatchInboundMessageMock.mockResolvedValue({
+      queuedFinal: true,
+      counts: { tool: 0, block: 0, final: 1 },
+    });
+    const abort = new AbortController();
+    const handler = createSignalEventHandler(
+      createBaseSignalEventHandlerDeps({
+        cfg: { messages: { inbound: { debounceMs: 10 } } },
+        abortSignal: abort.signal,
+      }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const handled = handler(
+        createSignalReceiveEvent({
+          dataMessage: { message: "accepted before shutdown", attachments: [] },
+        }),
+      );
+      // Abort after acceptance / enqueue scheduling, before the debounce flush.
+      abort.abort(new Error("monitor stopped"));
+      await vi.advanceTimersByTimeAsync(10);
+      await handled;
+
+      expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(1);
+      const payload = dispatchInboundMessageMock.mock.calls[0]?.[0] as
+        | { ctx?: { Body?: string } }
+        | undefined;
+      expect(payload?.ctx?.Body ?? "").toContain("accepted before shutdown");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a retry that crossed the timer boundary in the monitor task runner", async () => {
     let resolveRetry: (() => void) | undefined;
     const retryDispatch = new Promise<{ queuedFinal: boolean; counts: Record<string, number> }>(

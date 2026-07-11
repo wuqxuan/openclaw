@@ -236,7 +236,6 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     replyToSender?: string;
     replyToIsQuote?: boolean;
   };
-  const activeEnqueueEntries = new WeakSet<SignalInboundEntry>();
 
   async function handleSignalInboundMessage(entry: SignalInboundEntry) {
     const fromLabel = formatInboundFromLabel({
@@ -757,12 +756,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       });
     },
     onFlush: async (entries) => {
-      // enqueue() awaits inline and overflow flushes, but not timer-backed work.
-      // Drain tracked inline work on shutdown; stop delayed work with no owner.
-      const hasActiveEnqueue = entries.some((entry) => activeEnqueueEntries.has(entry));
-      if (!hasActiveEnqueue && deps.abortSignal?.aborted) {
-        return;
-      }
+      // Events accepted before monitor abort still get one initial flush attempt.
+      // Abort only cancels reply-session conflict retry backoff / later attempts
+      // (see retrySignalInboundFlush), so shutdown does not drop already-accepted
+      // debounced batches that fire after the lifecycle signal is aborted.
       try {
         await flushSignalInboundEntries(entries);
       } catch (err) {
@@ -1288,11 +1285,6 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       replyToSender: visibleQuoteSender,
       replyToIsQuote: visibleQuoteText ? true : undefined,
     };
-    activeEnqueueEntries.add(entry);
-    try {
-      await debouncer.enqueue(entry);
-    } finally {
-      activeEnqueueEntries.delete(entry);
-    }
+    await debouncer.enqueue(entry);
   };
 }
