@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 // Google tests cover memory embedding adapter plugin behavior.
 import {
   sanitizeEmbeddingCacheHeaders,
@@ -30,8 +29,24 @@ const provider: MemoryEmbeddingProvider = {
   embedBatch: async (texts) => texts.map(() => [1, 0]),
 };
 
-function hashProviderKey(cacheKeyData: Record<string, unknown>): string {
-  return createHash("sha256").update(JSON.stringify(cacheKeyData)).digest("hex");
+const clientBase = {
+  baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+  model: "gemini-embedding-2-preview",
+  modelPath: "models/gemini-embedding-2-preview",
+  outputDimensionality: 768,
+};
+
+async function createAdapterWithHeaders(headers: Record<string, string>) {
+  mocks.createGeminiEmbeddingProvider.mockResolvedValueOnce({
+    provider,
+    client: { ...clientBase, headers },
+  });
+  return await geminiMemoryEmbeddingProviderAdapter.create({
+    config: {} as never,
+    provider: "gemini",
+    model: "gemini-embedding-2-preview",
+    fallback: "none",
+  });
 }
 
 describe("Gemini memory embedding adapter", () => {
@@ -40,33 +55,24 @@ describe("Gemini memory embedding adapter", () => {
     mocks.runGeminiEmbeddingBatches.mockClear();
   });
 
-  it("excludes generated x-goog-api-client from durable memory identity headers", async () => {
-    mocks.createGeminiEmbeddingProvider.mockResolvedValue({
-      provider,
-      client: {
-        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": "secret-key",
-          "x-goog-api-client": "openclaw/2026.7.1-beta.5",
-          Authorization: "Bearer token",
-          "X-Custom-Region": "us-central1",
-        },
-        model: "gemini-embedding-2-preview",
-        modelPath: "models/gemini-embedding-2-preview",
-        outputDimensionality: 768,
-      },
+  it("keeps durable identity stable across generated client-version changes", async () => {
+    const sharedHeaders = {
+      "Content-Type": "application/json",
+      "x-goog-api-key": "secret-key",
+      Authorization: "Bearer token",
+      "X-Custom-Region": "us-central1",
+    };
+    const older = await createAdapterWithHeaders({
+      ...sharedHeaders,
+      "x-goog-api-client": "openclaw/2026.6.11",
+    });
+    const newer = await createAdapterWithHeaders({
+      ...sharedHeaders,
+      "x-goog-api-client": "openclaw/2026.7.1-beta.5",
     });
 
-    const result = await geminiMemoryEmbeddingProviderAdapter.create({
-      config: {} as never,
-      provider: "gemini",
-      model: "gemini-embedding-2-preview",
-      fallback: "none",
-    });
-
-    const headers = result.runtime?.cacheKeyData?.headers;
-    expect(headers).toEqual(
+    expect(older.runtime?.cacheKeyData).toEqual(newer.runtime?.cacheKeyData);
+    expect(older.runtime?.cacheKeyData?.headers).toEqual(
       sanitizeEmbeddingCacheHeaders(
         {
           "Content-Type": "application/json",
@@ -75,109 +81,18 @@ describe("Gemini memory embedding adapter", () => {
         [],
       ),
     );
-    expect(headers).not.toEqual(
-      expect.arrayContaining([
-        expect.arrayContaining(["x-goog-api-client"]),
-        expect.arrayContaining(["x-goog-api-key"]),
-        expect.arrayContaining(["Authorization"]),
-      ]),
-    );
-  });
-
-  it("keeps provider identity stable across OpenClaw client-version attribution changes", async () => {
-    const sharedClient = {
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-      model: "gemini-embedding-2-preview",
-      modelPath: "models/gemini-embedding-2-preview",
-      outputDimensionality: 768,
-    };
-
-    mocks.createGeminiEmbeddingProvider.mockResolvedValueOnce({
-      provider,
-      client: {
-        ...sharedClient,
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-client": "openclaw/2026.6.11",
-          "x-custom-endpoint": "https://example.invalid/embed",
-        },
-      },
-    });
-    mocks.createGeminiEmbeddingProvider.mockResolvedValueOnce({
-      provider,
-      client: {
-        ...sharedClient,
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-client": "openclaw/2026.7.1-beta.5",
-          "x-custom-endpoint": "https://example.invalid/embed",
-        },
-      },
-    });
-
-    const older = await geminiMemoryEmbeddingProviderAdapter.create({
-      config: {} as never,
-      provider: "gemini",
-      model: "gemini-embedding-2-preview",
-      fallback: "none",
-    });
-    const newer = await geminiMemoryEmbeddingProviderAdapter.create({
-      config: {} as never,
-      provider: "gemini",
-      model: "gemini-embedding-2-preview",
-      fallback: "none",
-    });
-
-    const olderKey = hashProviderKey(older.runtime?.cacheKeyData as Record<string, unknown>);
-    const newerKey = hashProviderKey(newer.runtime?.cacheKeyData as Record<string, unknown>);
-    expect(olderKey).toBe(newerKey);
-    expect(older.runtime?.cacheKeyData).toEqual(newer.runtime?.cacheKeyData);
   });
 
   it("still invalidates identity when a semantic custom header changes", async () => {
-    const sharedClient = {
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-      model: "gemini-embedding-2-preview",
-      modelPath: "models/gemini-embedding-2-preview",
-      outputDimensionality: 768,
-    };
-
-    mocks.createGeminiEmbeddingProvider.mockResolvedValueOnce({
-      provider,
-      client: {
-        ...sharedClient,
-        headers: {
-          "x-goog-api-client": "openclaw/2026.7.1-beta.5",
-          "x-custom-endpoint": "https://example.invalid/a",
-        },
-      },
+    const first = await createAdapterWithHeaders({
+      "x-goog-api-client": "openclaw/2026.7.1-beta.5",
+      "x-custom-endpoint": "https://example.invalid/a",
     });
-    mocks.createGeminiEmbeddingProvider.mockResolvedValueOnce({
-      provider,
-      client: {
-        ...sharedClient,
-        headers: {
-          "x-goog-api-client": "openclaw/2026.7.1-beta.5",
-          "x-custom-endpoint": "https://example.invalid/b",
-        },
-      },
+    const second = await createAdapterWithHeaders({
+      "x-goog-api-client": "openclaw/2026.7.1-beta.5",
+      "x-custom-endpoint": "https://example.invalid/b",
     });
 
-    const first = await geminiMemoryEmbeddingProviderAdapter.create({
-      config: {} as never,
-      provider: "gemini",
-      model: "gemini-embedding-2-preview",
-      fallback: "none",
-    });
-    const second = await geminiMemoryEmbeddingProviderAdapter.create({
-      config: {} as never,
-      provider: "gemini",
-      model: "gemini-embedding-2-preview",
-      fallback: "none",
-    });
-
-    expect(hashProviderKey(first.runtime?.cacheKeyData as Record<string, unknown>)).not.toBe(
-      hashProviderKey(second.runtime?.cacheKeyData as Record<string, unknown>),
-    );
+    expect(first.runtime?.cacheKeyData).not.toEqual(second.runtime?.cacheKeyData);
   });
 });
