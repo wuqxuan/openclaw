@@ -2,7 +2,11 @@
  * Channel health policy regression tests.
  */
 import { describe, expect, it } from "vitest";
-import { evaluateChannelHealth, resolveChannelRestartReason } from "./channel-health-policy.js";
+import {
+  evaluateChannelHealth,
+  resolveChannelHealthRecoveryOwnership,
+  resolveChannelRestartReason,
+} from "./channel-health-policy.js";
 
 function evaluateHealth(
   account: Record<string, unknown>,
@@ -228,5 +232,53 @@ describe("resolveChannelRestartReason", () => {
       { healthy: false, reason: "disconnected" },
     );
     expect(reason).toBe("disconnected");
+  });
+});
+
+describe("resolveChannelHealthRecoveryOwnership", () => {
+  it("treats mid-backoff (restartPending + positive attempts) as manager-owned", () => {
+    expect(
+      resolveChannelHealthRecoveryOwnership({
+        running: false,
+        restartPending: true,
+        reconnectAttempts: 3,
+      }),
+    ).toEqual({ kind: "manager-owned", phase: "active-backoff" });
+  });
+
+  it("treats terminal give-up as manager-owned", () => {
+    expect(
+      resolveChannelHealthRecoveryOwnership({
+        running: false,
+        restartPending: false,
+        reconnectAttempts: 11,
+      }),
+    ).toEqual({ kind: "manager-owned", phase: "gave-up" });
+    expect(
+      resolveChannelHealthRecoveryOwnership({
+        running: false,
+        reconnectAttempts: 10,
+      }),
+    ).toEqual({ kind: "manager-owned", phase: "gave-up" });
+  });
+
+  it("leaves timed-out recovery (restartPending, attempts=0) available for monitor", () => {
+    expect(
+      resolveChannelHealthRecoveryOwnership({
+        running: false,
+        restartPending: true,
+        reconnectAttempts: 0,
+      }),
+    ).toEqual({ kind: "available" });
+  });
+
+  it("leaves ordinary stopped accounts available for monitor revival", () => {
+    expect(
+      resolveChannelHealthRecoveryOwnership({
+        running: false,
+        restartPending: false,
+        reconnectAttempts: 0,
+      }),
+    ).toEqual({ kind: "available" });
   });
 });

@@ -26,8 +26,14 @@ import {
 import type { RuntimeEnv } from "../runtime.js";
 import { isAccountEnabled } from "../shared/account-enabled.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
+import {
+  CHANNEL_MAX_RESTART_ATTEMPTS,
+  resolveChannelHealthRecoveryOwnership,
+  type ChannelHealthRecoveryOwnership,
+} from "./channel-health-policy.js";
 import type { ChannelRuntimeSnapshot } from "./server-channel-runtime.types.js";
 export type { ChannelRuntimeSnapshot };
+export type { ChannelHealthRecoveryOwnership };
 
 const CHANNEL_RESTART_POLICY: BackoffPolicy = {
   initialMs: 5_000,
@@ -35,7 +41,7 @@ const CHANNEL_RESTART_POLICY: BackoffPolicy = {
   factor: 2,
   jitter: 0.1,
 };
-const MAX_RESTART_ATTEMPTS = 10;
+const MAX_RESTART_ATTEMPTS = CHANNEL_MAX_RESTART_ATTEMPTS;
 const CHANNEL_STABLE_RUN_MS = CHANNEL_RESTART_POLICY.maxMs;
 const CHANNEL_STOP_ABORT_TIMEOUT_MS = 5_000;
 const CHANNEL_STARTUP_CONCURRENCY = 4;
@@ -254,6 +260,14 @@ export type ChannelManager = {
   markChannelLoggedOut: (channelId: ChannelId, cleared: boolean, accountId?: string) => void;
   isManuallyStopped: (channelId: ChannelId, accountId: string) => boolean;
   resetRestartAttempts: (channelId: ChannelId, accountId: string) => void;
+  /**
+   * Manager-owned recovery contract for the health monitor.
+   * Active crash-loop backoff and terminal give-up must not be cleared or revived.
+   */
+  resolveHealthRecoveryOwnership: (
+    channelId: ChannelId,
+    accountId: string,
+  ) => ChannelHealthRecoveryOwnership;
   isHealthMonitorEnabled: (channelId: ChannelId, accountId: string) => boolean;
 };
 
@@ -1073,6 +1087,22 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     restartAttempts.delete(restartKey(channelId, accountId));
   };
 
+  const resolveHealthRecoveryOwnership = (
+    channelId: ChannelId,
+    accountId: string,
+  ): ChannelHealthRecoveryOwnership => {
+    const runtime = getRuntime(channelId, accountId);
+    const rKey = restartKey(channelId, accountId);
+    // Prefer manager-owned attempt counter when present so a stale snapshot
+    // cannot hide terminal give-up or mid-backoff ownership.
+    const attempts = restartAttempts.get(rKey) ?? runtime.reconnectAttempts;
+    return resolveChannelHealthRecoveryOwnership({
+      running: runtime.running,
+      restartPending: runtime.restartPending,
+      reconnectAttempts: attempts,
+    });
+  };
+
   return {
     getRuntimeSnapshot,
     startChannels,
@@ -1085,6 +1115,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     markChannelLoggedOut,
     isManuallyStopped: isManuallyStoppedFlag,
     resetRestartAttempts: resetRestartAttemptsForTest,
+    resolveHealthRecoveryOwnership,
     isHealthMonitorEnabled,
   };
 }

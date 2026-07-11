@@ -161,11 +161,28 @@ export function startChannelHealthMonitor(deps: ChannelHealthMonitorDeps): Chann
             continue;
           }
 
+          // Manager owns crash-loop backoff and terminal give-up. Do not clear
+          // restartAttempts or startChannel for those states — that undoes give-up
+          // and resets the counter while a backoff task still owns the account.
+          const ownership = channelManager.resolveHealthRecoveryOwnership(
+            channelId as ChannelId,
+            accountId,
+          );
+          if (ownership.kind === "manager-owned") {
+            log.info?.(
+              `[${channelId}:${accountId}] health-monitor: skipping restart, manager owns recovery (${ownership.phase})`,
+            );
+            continue;
+          }
+
           const record = restartRecords.get(key) ?? {
             lastRestartAt: 0,
             restartsThisHour: [],
           };
 
+          // Timed-out recovery stop marks restartPending with reconnectAttempts=0;
+          // finish that recovery without waiting on this monitor's cooldown.
+          // Manager crash-loop backoff (attempts > 0) is filtered above as manager-owned.
           const continuingPendingRestart =
             status.running !== true &&
             status.restartPending === true &&

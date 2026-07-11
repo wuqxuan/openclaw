@@ -6,11 +6,14 @@ import type { ChannelId } from "../channels/plugins/types.js";
 import type { ChannelAccountSnapshot } from "../channels/plugins/types.js";
 import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
+import { resolveChannelHealthRecoveryOwnership } from "./channel-health-policy.js";
 import type { ChannelManager, ChannelRuntimeSnapshot } from "./server-channels.js";
 
 function createMockChannelManager(overrides?: Partial<ChannelManager>): ChannelManager {
-  return {
-    getRuntimeSnapshot: vi.fn(() => ({ channels: {}, channelAccounts: {} })),
+  const getRuntimeSnapshot =
+    overrides?.getRuntimeSnapshot ?? vi.fn(() => ({ channels: {}, channelAccounts: {} }));
+  const base: ChannelManager = {
+    getRuntimeSnapshot,
     startChannels: vi.fn(async () => {}),
     startChannel: vi.fn(async () => {}),
     stopChannel: vi.fn(async () => {}),
@@ -20,8 +23,24 @@ function createMockChannelManager(overrides?: Partial<ChannelManager>): ChannelM
     isHealthMonitorEnabled: vi.fn(() => true),
     isManuallyStopped: vi.fn(() => false),
     resetRestartAttempts: vi.fn(),
+    // Default ownership mirrors the live manager contract from the current snapshot.
+    resolveHealthRecoveryOwnership: vi.fn((channelId: ChannelId, accountId: string) => {
+      const snapshot = getRuntimeSnapshot();
+      const status = snapshot.channelAccounts[channelId]?.[accountId] ?? {};
+      return resolveChannelHealthRecoveryOwnership(status);
+    }),
     ...overrides,
   };
+  // If a test overrides getRuntimeSnapshot, re-bind ownership to that snapshot unless
+  // the test also supplies an explicit ownership implementation.
+  if (overrides?.getRuntimeSnapshot && !overrides.resolveHealthRecoveryOwnership) {
+    base.resolveHealthRecoveryOwnership = vi.fn((channelId: ChannelId, accountId: string) => {
+      const snapshot = base.getRuntimeSnapshot();
+      const status = snapshot.channelAccounts[channelId]?.[accountId] ?? {};
+      return resolveChannelHealthRecoveryOwnership(status);
+    });
+  }
+  return base;
 }
 
 function snapshotWith(
@@ -462,18 +481,37 @@ describe("channel-health-monitor", () => {
     monitor.stop();
   });
 
-  it("restarts a stopped channel that gave up (reconnectAttempts >= 10)", async () => {
+  it("does not clear attempts or revive a channel after manager give-up", async () => {
     const manager = createSnapshotManager({
       discord: {
         default: {
           ...managedStoppedAccount("Failed to resolve Discord application id"),
-          reconnectAttempts: 10,
+          restartPending: false,
+          reconnectAttempts: 11,
         },
       },
     });
     const monitor = await startAndRunCheck(manager);
-    expect(manager.resetRestartAttempts).toHaveBeenCalledWith("discord", "default");
-    expect(manager.startChannel).toHaveBeenCalledWith("discord", "default");
+    expect(manager.resolveHealthRecoveryOwnership).toHaveBeenCalledWith("discord", "default");
+    expect(manager.resetRestartAttempts).not.toHaveBeenCalled();
+    expect(manager.startChannel).not.toHaveBeenCalled();
+    monitor.stop();
+  });
+
+  it("does not clear manager crash-loop progress during mid-backoff", async () => {
+    const manager = createSnapshotManager({
+      discord: {
+        default: {
+          ...managedStoppedAccount("start failed"),
+          restartPending: true,
+          reconnectAttempts: 3,
+        },
+      },
+    });
+    const monitor = await startAndRunCheck(manager);
+    expect(manager.resolveHealthRecoveryOwnership).toHaveBeenCalledWith("discord", "default");
+    expect(manager.resetRestartAttempts).not.toHaveBeenCalled();
+    expect(manager.startChannel).not.toHaveBeenCalled();
     monitor.stop();
   });
 

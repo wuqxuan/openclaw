@@ -45,8 +45,51 @@ export type ChannelHealthPolicy = {
 
 type ChannelRestartReason = "gave-up" | "stopped" | "stale-socket" | "stuck" | "disconnected";
 
+/** Must match manager crash-loop bound in `server-channels.ts` (`MAX_RESTART_ATTEMPTS`). */
+export const CHANNEL_MAX_RESTART_ATTEMPTS = 10;
+
+/**
+ * Who owns recovery for a stopped/unhealthy account snapshot.
+ * Manager backoff and terminal give-up are authoritative; the health monitor
+ * must not clear attempt accounting or revive those states.
+ */
+export type ChannelHealthRecoveryOwnership =
+  | { kind: "manager-owned"; phase: "active-backoff" | "gave-up" }
+  | { kind: "available" };
+
 function isManagedAccount(snapshot: ChannelHealthSnapshot): boolean {
   return snapshot.enabled !== false && snapshot.configured !== false;
+}
+
+/**
+ * Classify whether the channel manager already owns crash-loop recovery.
+ * Active backoff: mid-restart sleep with a positive attempt counter.
+ * Gave-up: terminal after exceeding CHANNEL_MAX_RESTART_ATTEMPTS.
+ * Available: monitor may stop/start and reset attempts (wedged/timed-out recovery).
+ */
+export function resolveChannelHealthRecoveryOwnership(
+  snapshot: Pick<ChannelHealthSnapshot, "running" | "restartPending" | "reconnectAttempts">,
+  opts?: { maxRestartAttempts?: number },
+): ChannelHealthRecoveryOwnership {
+  if (snapshot.running === true) {
+    return { kind: "available" };
+  }
+  const maxRestartAttempts = opts?.maxRestartAttempts ?? CHANNEL_MAX_RESTART_ATTEMPTS;
+  const attempts =
+    typeof snapshot.reconnectAttempts === "number" && Number.isFinite(snapshot.reconnectAttempts)
+      ? Math.max(0, Math.trunc(snapshot.reconnectAttempts))
+      : 0;
+  // Manager crash-loop backoff sets restartPending with attempt >= 1 while a
+  // task still owns the account; timed-out recovery uses reconnectAttempts=0.
+  if (snapshot.restartPending === true && attempts > 0) {
+    return { kind: "manager-owned", phase: "active-backoff" };
+  }
+  // Manager give-up clears restartPending and leaves reconnectAttempts above the
+  // bound (attempt becomes MAX+1). Policy logging also treats >= MAX as gave-up.
+  if (snapshot.restartPending !== true && attempts >= maxRestartAttempts) {
+    return { kind: "manager-owned", phase: "gave-up" };
+  }
+  return { kind: "available" };
 }
 
 const BUSY_ACTIVITY_STALE_THRESHOLD_MS = 25 * 60_000;

@@ -38,6 +38,7 @@ function createManager(snapshot: ChannelRuntimeSnapshot): ChannelManager {
     isHealthMonitorEnabled: vi.fn(() => true),
     isManuallyStopped: vi.fn(() => false),
     resetRestartAttempts: vi.fn(),
+    resolveHealthRecoveryOwnership: vi.fn(() => ({ kind: "available" as const })),
   };
 }
 
