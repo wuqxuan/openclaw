@@ -947,9 +947,15 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
           log.warn?.(
             `[${id}] channel stop exceeded ${CHANNEL_STOP_ABORT_TIMEOUT_MS}ms after abort; continuing shutdown`,
           );
+          // Timed-out recovery is monitor-owned: keep restartPending and publish
+          // reconnectAttempts=0 so the health-monitor "continue pending recovery"
+          // path matches the ownership query (recoveryStopTimedOut override).
+          // Do not leave a prior crash-loop count on the snapshot or ownership
+          // will look like active-backoff and the monitor will skip startChannel.
           const stoppedPatch = {
             restartPending: !manual,
             lastError: `channel stop timed out after ${CHANNEL_STOP_ABORT_TIMEOUT_MS}ms`,
+            ...(!manual ? { reconnectAttempts: 0 } : {}),
           };
           if (manual) {
             setRuntime(channelId, id, {
@@ -1093,6 +1099,13 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   ): ChannelHealthRecoveryOwnership => {
     const runtime = getRuntime(channelId, accountId);
     const rKey = restartKey(channelId, accountId);
+    // Monitor-owned stop-timeout recovery must win over retained crash-loop
+    // attempt counters. A prior restartAttempts/reconnectAttempts value with
+    // restartPending would otherwise classify as active-backoff and the monitor
+    // would skip the follow-up startChannel that replaces the timed-out task.
+    if (recoveryStopTimedOut.has(rKey)) {
+      return { kind: "available" };
+    }
     // Prefer manager-owned attempt counter when present so a stale snapshot
     // cannot hide terminal give-up or mid-backoff ownership.
     const attempts = restartAttempts.get(rKey) ?? runtime.reconnectAttempts;
