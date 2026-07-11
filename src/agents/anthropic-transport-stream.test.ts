@@ -12,9 +12,13 @@ const { buildGuardedModelFetchMock, guardedFetchMock } = vi.hoisted(() => ({
   guardedFetchMock: vi.fn(),
 }));
 
-vi.mock("./provider-transport-fetch.js", () => ({
-  buildGuardedModelFetch: buildGuardedModelFetchMock,
-}));
+vi.mock("./provider-transport-fetch.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./provider-transport-fetch.js")>();
+  return {
+    ...actual,
+    buildGuardedModelFetch: buildGuardedModelFetchMock,
+  };
+});
 
 let createAnthropicMessagesTransportStreamFn: typeof import("./anthropic-transport-stream.js").createAnthropicMessagesTransportStreamFn;
 
@@ -873,6 +877,34 @@ describe("anthropic transport stream", () => {
     expect(headers.get("api-key")).toBeNull();
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("X-Provider")).toBe("foundry");
+  });
+
+  it("projects HTTP status and Retry-After from Anthropic error responses", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "rate_limit_error",
+            message: "Number of request tokens has exceeded your per-minute rate limit.",
+          },
+        }),
+        { status: 429, headers: { "retry-after": "30" } },
+      ),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel(),
+      {
+        messages: [{ role: "user", content: "hello" }],
+      } as AnthropicStreamContext,
+      { apiKey: "sk-ant-api" } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("error");
+    expect(result.httpStatus).toBe(429);
+    expect(result.retryAfterSeconds).toBe(30);
+    expect(result.errorBody).toContain("rate_limit_error");
   });
 
   it("bounds streamed Anthropic error responses without content-length", async () => {

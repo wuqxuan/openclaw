@@ -30,6 +30,8 @@ type TransportOutputShape = {
   errorCode?: string;
   errorType?: string;
   errorBody?: string;
+  httpStatus?: number;
+  retryAfterSeconds?: number;
 };
 
 const EMPTY_TOOL_RESULT_TEXT = "(no output)";
@@ -149,7 +151,24 @@ type TransportErrorDetails = {
   errorCode?: string;
   errorType?: string;
   errorBody?: string;
+  httpStatus?: number;
+  retryAfterSeconds?: number;
 };
+
+function readFiniteNumberProperty(value: unknown, key: string): number | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = (value as Record<string, unknown>)[key];
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw;
+  }
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
 
 function readStringLikeProperty(value: unknown, key: string): string | undefined {
   if (!value || typeof value !== "object") {
@@ -229,11 +248,27 @@ function extractTransportErrorDetails(error: unknown): TransportErrorDetails {
     normalizeTransportErrorBody(readStringLikeProperty(errorObject, "body")) ??
     normalizeTransportErrorBody(readObjectProperty(errorObject, "body")) ??
     normalizeTransportErrorBody(nestedError);
+  // Prefer explicit transport fields; fall back to common HTTP status aliases.
+  const httpStatusRaw =
+    readFiniteNumberProperty(errorObject, "httpStatus") ??
+    readFiniteNumberProperty(errorObject, "status") ??
+    readFiniteNumberProperty(errorObject, "statusCode");
+  const httpStatus =
+    httpStatusRaw !== undefined && httpStatusRaw >= 100 && httpStatusRaw <= 599
+      ? Math.trunc(httpStatusRaw)
+      : undefined;
+  const retryAfterSecondsRaw = readFiniteNumberProperty(errorObject, "retryAfterSeconds");
+  const retryAfterSeconds =
+    retryAfterSecondsRaw !== undefined && retryAfterSecondsRaw >= 0
+      ? retryAfterSecondsRaw
+      : undefined;
 
   return {
     ...(errorCode ? { errorCode } : {}),
     ...(errorType ? { errorType } : {}),
     ...(errorBody ? { errorBody } : {}),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
   };
 }
 

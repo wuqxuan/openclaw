@@ -84,9 +84,35 @@ function parseRetryAfterSeconds(message: string): number | null {
 
 function resolveShortWindowRateLimitRetry(
   message: string | undefined,
+  structured?: { httpStatus?: number; retryAfterSeconds?: number },
 ): ShortWindowRateLimitRetry | null {
+  const structuredRetryAfter =
+    structured?.retryAfterSeconds !== undefined &&
+    Number.isFinite(structured.retryAfterSeconds) &&
+    structured.retryAfterSeconds >= 0
+      ? structured.retryAfterSeconds
+      : null;
+  // Prefer transport-preserved Retry-After when present; text parsing is fallback.
+  if (
+    structuredRetryAfter !== null &&
+    structuredRetryAfter <= MAX_SHORT_WINDOW_RETRY_AFTER_SECONDS
+  ) {
+    return { retryAfterSeconds: structuredRetryAfter };
+  }
+  if (
+    structuredRetryAfter !== null &&
+    structuredRetryAfter > MAX_SHORT_WINDOW_RETRY_AFTER_SECONDS
+  ) {
+    return null;
+  }
+
   const raw = message?.trim();
   if (!raw) {
+    // Bare HTTP 429 with no text can still be a short-window throttle when the
+    // transport attached status without a Retry-After header.
+    if (structured?.httpStatus === 429) {
+      return {};
+    }
     return null;
   }
   const retryAfterSeconds = parseRetryAfterSeconds(raw);
@@ -107,15 +133,19 @@ function resolveShortWindowRateLimitRetry(
   // present; hard daily/usage/subscription limits are filtered above.
   // Some gateways strip throttle details and Retry-After. Preserve the
   // long-window exclusions above before treating a bare 429 as transient.
-  const statusPrefixed429 = extractLeadingHttpStatus(raw)?.code === 429;
+  const statusPrefixed429 =
+    extractLeadingHttpStatus(raw)?.code === 429 || structured?.httpStatus === 429;
   if (!SHORT_WINDOW_RATE_LIMIT_RE.test(raw) && !shortRetryAfter && !statusPrefixed429) {
     return null;
   }
   return retryAfterSeconds !== null ? { retryAfterSeconds } : {};
 }
 
-export function isShortWindowRateLimitMessage(message: string | undefined): boolean {
-  return resolveShortWindowRateLimitRetry(message) !== null;
+export function isShortWindowRateLimitMessage(
+  message: string | undefined,
+  structured?: { httpStatus?: number; retryAfterSeconds?: number },
+): boolean {
+  return resolveShortWindowRateLimitRetry(message, structured) !== null;
 }
 
 /**
@@ -255,7 +285,13 @@ export async function handleAssistantFailover(params: {
       // Minute-scale RPM windows can clear without spending a profile rotation
       // or model fallback. Keep the retry bounded; once exhausted, continue
       // through the existing rate-limit escalation path.
-      const shortWindowRetry = resolveShortWindowRateLimitRetry(params.lastAssistant?.errorMessage);
+      const shortWindowRetry = resolveShortWindowRateLimitRetry(
+        params.lastAssistant?.errorMessage,
+        {
+          httpStatus: params.lastAssistant?.httpStatus,
+          retryAfterSeconds: params.lastAssistant?.retryAfterSeconds,
+        },
+      );
       if (
         params.allowSameModelRateLimitRetry &&
         shortWindowRetry &&

@@ -72,7 +72,7 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./copilot-dyn
 import { parseJsonObjectPreservingUnsafeIntegers } from "./json-unsafe-integers.js";
 import { resolveProviderEndpoint } from "./provider-attribution.js";
 import { unwrapModelHeaderSentinelsForProviderEgress } from "./provider-secret-egress.js";
-import { buildGuardedModelFetch } from "./provider-transport-fetch.js";
+import { buildGuardedModelFetch, parseRetryAfterSeconds } from "./provider-transport-fetch.js";
 import type { StreamFn } from "./runtime/index.js";
 import { transformTransportMessages } from "./transport-message-transform.js";
 import {
@@ -837,9 +837,7 @@ function createAnthropicMessagesClient(params: {
         });
         if (!response.ok) {
           const detail = await readAnthropicMessagesErrorBodySnippet(response);
-          throw new Error(
-            detail || `Anthropic Messages request failed with HTTP ${response.status}`,
-          );
+          throw createAnthropicMessagesHttpError(response, detail);
         }
         if (!response.body) {
           return;
@@ -848,6 +846,32 @@ function createAnthropicMessagesClient(params: {
       },
     },
   };
+}
+
+/**
+ * Preserve HTTP status and Retry-After on the thrown error so shared transport
+ * projection can attach them to AssistantMessage for same-model retry backoff.
+ * Without this, only the error text survives and AgentSession uses fixed exponential delays.
+ */
+function createAnthropicMessagesHttpError(response: Response, detail: string): Error {
+  const error = new Error(
+    detail || `Anthropic Messages request failed with HTTP ${response.status}`,
+  ) as Error & {
+    status?: number;
+    httpStatus?: number;
+    retryAfterSeconds?: number;
+    errorBody?: string;
+  };
+  error.status = response.status;
+  error.httpStatus = response.status;
+  if (detail) {
+    error.errorBody = detail;
+  }
+  const retryAfterSeconds = parseRetryAfterSeconds(response.headers);
+  if (retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds)) {
+    error.retryAfterSeconds = retryAfterSeconds;
+  }
+  return error;
 }
 
 async function readAnthropicMessagesErrorBodySnippet(response: Response): Promise<string> {

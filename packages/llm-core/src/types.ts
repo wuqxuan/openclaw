@@ -319,6 +319,14 @@ export interface AssistantMessage {
   errorCode?: string;
   errorType?: string;
   errorBody?: string;
+  /** HTTP status from the failed provider response when the transport preserved it. */
+  httpStatus?: number;
+  /**
+   * Server-requested cooldown in seconds (Retry-After) when the transport preserved it.
+   * Callers should treat this as a lower bound for same-model retry delay and still apply
+   * operator max-delay caps.
+   */
+  retryAfterSeconds?: number;
   timestamp: number; // Unix timestamp in milliseconds
 }
 

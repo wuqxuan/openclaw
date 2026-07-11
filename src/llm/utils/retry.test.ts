@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../types.js";
-import { isRetryableAssistantError } from "./retry.js";
+import { isRetryableAssistantError, resolveAutoRetryDelayMs } from "./retry.js";
 
 function errorMessage(message: string): AssistantMessage {
   return {
@@ -53,5 +53,51 @@ describe("isRetryableAssistantError", () => {
         ),
       ),
     ).toBe(true);
+  });
+});
+
+describe("resolveAutoRetryDelayMs", () => {
+  it("uses Retry-After as a lower bound when it exceeds exponential backoff", () => {
+    expect(
+      resolveAutoRetryDelayMs({
+        attempt: 1,
+        baseDelayMs: 2000,
+        retryAfterSeconds: 30,
+        maxRetryDelayMs: 60_000,
+      }),
+    ).toBe(30_000);
+  });
+
+  it("keeps exponential backoff when Retry-After is shorter", () => {
+    expect(
+      resolveAutoRetryDelayMs({
+        attempt: 3,
+        baseDelayMs: 2000,
+        retryAfterSeconds: 1,
+        maxRetryDelayMs: 60_000,
+      }),
+    ).toBe(8000);
+  });
+
+  it("caps Retry-After at the configured provider max delay", () => {
+    expect(
+      resolveAutoRetryDelayMs({
+        attempt: 1,
+        baseDelayMs: 2000,
+        retryAfterSeconds: 3600,
+        maxRetryDelayMs: 60_000,
+      }),
+    ).toBe(60_000);
+  });
+
+  it("honors cooldowns above 60s when the operator raises maxRetryDelayMs", () => {
+    expect(
+      resolveAutoRetryDelayMs({
+        attempt: 1,
+        baseDelayMs: 2000,
+        retryAfterSeconds: 90,
+        maxRetryDelayMs: 120_000,
+      }),
+    ).toBe(90_000);
   });
 });

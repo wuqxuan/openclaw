@@ -1,5 +1,33 @@
 import type { AssistantMessage } from "../types.js";
 
+/**
+ * Resolve auto-retry sleep using exponential backoff as the floor and a validated
+ * server Retry-After as a lower bound, capped by the operator max delay.
+ */
+export function resolveAutoRetryDelayMs(params: {
+  attempt: number;
+  baseDelayMs: number;
+  retryAfterSeconds?: number;
+  maxRetryDelayMs: number;
+}): number {
+  const attempt = Math.max(1, Math.trunc(params.attempt));
+  const baseDelayMs = Math.max(0, params.baseDelayMs);
+  const exponentialDelayMs = baseDelayMs * 2 ** (attempt - 1);
+  const maxRetryDelayMs = Math.max(0, params.maxRetryDelayMs);
+  const retryAfterSeconds = params.retryAfterSeconds;
+  if (
+    retryAfterSeconds === undefined ||
+    !Number.isFinite(retryAfterSeconds) ||
+    retryAfterSeconds < 0
+  ) {
+    return exponentialDelayMs;
+  }
+  // Cap server cooldown at the configured provider max so extreme Retry-After values
+  // cannot stall a session indefinitely; values within the cap are honored in full.
+  const retryAfterDelayMs = Math.min(maxRetryDelayMs, Math.ceil(retryAfterSeconds * 1000));
+  return Math.max(exponentialDelayMs, retryAfterDelayMs);
+}
+
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
   return new RegExp(patterns.join("|"), "i");
 }
