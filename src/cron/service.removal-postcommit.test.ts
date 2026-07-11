@@ -52,6 +52,23 @@ function createCompletedOnExitJob(id: string, nowMs: number, deleteAfterRun: boo
   };
 }
 
+/** Armed on-exit job as an operator might force-run before the watched process exits. */
+function createArmedOnExitJob(id: string, nowMs: number, deleteAfterRun: boolean): CronJob {
+  return {
+    id,
+    name: `on-exit armed ${id}`,
+    enabled: true,
+    deleteAfterRun,
+    createdAtMs: nowMs - 60_000,
+    updatedAtMs: nowMs - 1_000,
+    schedule: { kind: "on-exit", command: "sh -c 'exit 0'" },
+    sessionTarget: "isolated",
+    wakeMode: "next-heartbeat",
+    payload: { kind: "agentTurn", message: "do work" },
+    state: {},
+  };
+}
+
 function createState(params: {
   storePath: string;
   nowMs: number;
@@ -341,6 +358,78 @@ describe("cron on-exit deleteAfterRun finalization (#104518)", () => {
         expect.objectContaining({
           id: job.id,
           enabled: false,
+          deleteAfterRun: true,
+          state: expect.objectContaining({ lastRunStatus: "error" }),
+        }),
+      ]);
+    } finally {
+      clearStateTimer(state);
+    }
+  });
+
+  it("keeps an armed on-exit job enabled after manual keep-after-run success", async () => {
+    const { storePath } = await makeStorePath();
+    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+    const job = createArmedOnExitJob("on-exit-armed-keep-ok", nowMs, false);
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+
+    const events: CronEvent[] = [];
+    const state = createState({
+      storePath,
+      nowMs,
+      onEvent: (event) => events.push(structuredClone(event)),
+    });
+
+    try {
+      await run(state, job.id, "force");
+
+      expect(events.map((event) => event.action)).toEqual(["started", "finished"]);
+      expect(events.some((event) => event.action === "removed")).toBe(false);
+      const listed = await list(state, { includeDisabled: true });
+      expect(listed).toEqual([
+        expect.objectContaining({
+          id: job.id,
+          enabled: true,
+          deleteAfterRun: false,
+          state: expect.objectContaining({ lastRunStatus: "ok" }),
+        }),
+      ]);
+    } finally {
+      clearStateTimer(state);
+    }
+  });
+
+  it("keeps an armed on-exit job enabled after manual force-run failure", async () => {
+    const { storePath } = await makeStorePath();
+    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+    const job = createArmedOnExitJob("on-exit-armed-fail", nowMs, true);
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+
+    const events: CronEvent[] = [];
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => nowMs,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({
+        status: "error" as const,
+        error: "payload failed",
+        summary: "fail",
+      })),
+      onEvent: (event) => events.push(structuredClone(event)),
+    });
+
+    try {
+      await run(state, job.id, "force");
+
+      expect(events.some((event) => event.action === "removed")).toBe(false);
+      const listed = await list(state, { includeDisabled: true });
+      expect(listed).toEqual([
+        expect.objectContaining({
+          id: job.id,
+          enabled: true,
           deleteAfterRun: true,
           state: expect.objectContaining({ lastRunStatus: "error" }),
         }),

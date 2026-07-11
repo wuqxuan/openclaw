@@ -891,13 +891,10 @@ export function applyJobResult(
           );
         }
       }
-    } else if (job.schedule.kind === "on-exit") {
-      // Fire-once event schedule: after a payload run, never re-arm via timer.
-      // Exit watchers also disable pre-fire so a Gateway restart cannot re-run
-      // the watched command; keep that terminal retention when deletion is off
-      // or the payload did not succeed.
-      job.enabled = false;
-      job.state.nextRunAtMs = undefined;
+      // on-exit is intentionally omitted: the Gateway exit watcher already
+      // disables before payload fire. Operator force runs share this finalizer
+      // without a watcher-origin fact, so non-delete on-exit results must not
+      // cancel still-armed watches. Successful deleteAfterRun uses shouldDelete.
     } else if (result.status === "error" && isJobEnabled(job)) {
       const retryDecision = resolveTransientCronRetryDecision({
         cronConfig: state.deps.cronConfig,
