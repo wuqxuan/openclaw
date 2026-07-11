@@ -72,6 +72,8 @@ Cron is the Gateway's built-in scheduler. It persists jobs, wakes the agent at t
 | `cron`    | `--cron`    | 5-field or 6-field cron expression with optional `--tz`                                                  |
 | `on-exit` | `--on-exit` | Fire once when a watched command exits (event trigger; survives turn teardown; optional `--on-exit-cwd`) |
 
+`on-exit` jobs honor `--delete-after-run` / `--keep-after-run` the same way as successful one-shot `--at` jobs: after a successful payload run, delete when requested; otherwise keep the job disabled (the Gateway exit watcher disables the job before the payload runs so a restart cannot re-arm the watched command). Failed payload runs are never auto-deleted.
+
 Timestamps without a timezone are treated as UTC. Add `--tz America/New_York` to interpret an offset-less `--at` datetime, or to evaluate a cron expression, in that IANA timezone. Cron expressions without `--tz` use the Gateway host timezone. `--tz` is not valid with `--every` or `--on-exit`.
 
 Recurring top-of-hour expressions (minute `0` with a wildcard hour field) are automatically staggered by up to 5 minutes to reduce load spikes. Use `--exact` to force precise timing, or `--stagger 30s` for an explicit window (cron schedules only).

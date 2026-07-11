@@ -35,6 +35,23 @@ function createDueOneShot(id: string, nowMs: number): CronJob {
   };
 }
 
+/** On-exit job already terminal-disabled by the Gateway exit watcher (pre-fire). */
+function createCompletedOnExitJob(id: string, nowMs: number, deleteAfterRun: boolean): CronJob {
+  return {
+    id,
+    name: `on-exit ${id}`,
+    enabled: false,
+    deleteAfterRun,
+    createdAtMs: nowMs - 60_000,
+    updatedAtMs: nowMs - 1_000,
+    schedule: { kind: "on-exit", command: "sh -c 'exit 0'" },
+    sessionTarget: "isolated",
+    wakeMode: "next-heartbeat",
+    payload: { kind: "agentTurn", message: "do work" },
+    state: {},
+  };
+}
+
 function createState(params: {
   storePath: string;
   nowMs: number;
@@ -228,6 +245,106 @@ describe.each(removalPaths)("cron one-shot removal via %s", (path) => {
       expect(state.durableNextRunAtMsByJobId).toEqual(
         new Map([[job.id, durableBefore.jobs[0]?.state.nextRunAtMs]]),
       );
+    } finally {
+      clearStateTimer(state);
+    }
+  });
+});
+
+describe("cron on-exit deleteAfterRun finalization (#104518)", () => {
+  it("deletes a successful on-exit job after force run when deleteAfterRun is true", async () => {
+    const { storePath } = await makeStorePath();
+    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+    // Mirrors Gateway watcher pre-fire disable, then payload force-run.
+    const job = createCompletedOnExitJob("on-exit-delete-ok", nowMs, true);
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+
+    const events: CronEvent[] = [];
+    const state = createState({
+      storePath,
+      nowMs,
+      onEvent: (event) => events.push(structuredClone(event)),
+    });
+
+    try {
+      await run(state, job.id, "force");
+
+      expect(events.map((event) => event.action)).toEqual(["started", "finished", "removed"]);
+      expect(state.store?.jobs).toEqual([]);
+      const durable = await loadCronStore(storePath);
+      expect(durable.jobs).toEqual([]);
+    } finally {
+      clearStateTimer(state);
+    }
+  });
+
+  it("keeps a successful on-exit job disabled when deleteAfterRun is false", async () => {
+    const { storePath } = await makeStorePath();
+    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+    const job = createCompletedOnExitJob("on-exit-keep-disabled", nowMs, false);
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+
+    const events: CronEvent[] = [];
+    const state = createState({
+      storePath,
+      nowMs,
+      onEvent: (event) => events.push(structuredClone(event)),
+    });
+
+    try {
+      await run(state, job.id, "force");
+
+      expect(events.map((event) => event.action)).toEqual(["started", "finished"]);
+      expect(events.some((event) => event.action === "removed")).toBe(false);
+      const listed = await list(state, { includeDisabled: true });
+      expect(listed).toEqual([
+        expect.objectContaining({
+          id: job.id,
+          enabled: false,
+          deleteAfterRun: false,
+          state: expect.objectContaining({ lastRunStatus: "ok" }),
+        }),
+      ]);
+    } finally {
+      clearStateTimer(state);
+    }
+  });
+
+  it("keeps a failed on-exit job disabled when deleteAfterRun is true", async () => {
+    const { storePath } = await makeStorePath();
+    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+    const job = createCompletedOnExitJob("on-exit-fail-keep", nowMs, true);
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+
+    const events: CronEvent[] = [];
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => nowMs,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({
+        status: "error" as const,
+        error: "payload failed",
+        summary: "fail",
+      })),
+      onEvent: (event) => events.push(structuredClone(event)),
+    });
+
+    try {
+      await run(state, job.id, "force");
+
+      expect(events.some((event) => event.action === "removed")).toBe(false);
+      const listed = await list(state, { includeDisabled: true });
+      expect(listed).toEqual([
+        expect.objectContaining({
+          id: job.id,
+          enabled: false,
+          deleteAfterRun: true,
+          state: expect.objectContaining({ lastRunStatus: "error" }),
+        }),
+      ]);
     } finally {
       clearStateTimer(state);
     }

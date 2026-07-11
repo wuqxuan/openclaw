@@ -803,8 +803,14 @@ export function applyJobResult(
     job.state.lastFailureAlertAtMs = undefined;
   }
 
+  // Successful delete-after-run applies to fire-once schedules (`at` and
+  // `on-exit`). Recurring kinds never delete via this path.
+  // Gateway on-exit watchers disable the job before payload fire for replay
+  // safety; this finalizer still owns post-success removal when requested.
   const shouldDelete =
-    job.schedule.kind === "at" && job.deleteAfterRun === true && result.status === "ok";
+    (job.schedule.kind === "at" || job.schedule.kind === "on-exit") &&
+    job.deleteAfterRun === true &&
+    result.status === "ok";
   const retryDisabledHeartbeatOneShot = shouldRetryDisabledHeartbeatOneShot(job, result);
 
   if (!shouldDelete) {
@@ -885,6 +891,13 @@ export function applyJobResult(
           );
         }
       }
+    } else if (job.schedule.kind === "on-exit") {
+      // Fire-once event schedule: after a payload run, never re-arm via timer.
+      // Exit watchers also disable pre-fire so a Gateway restart cannot re-run
+      // the watched command; keep that terminal retention when deletion is off
+      // or the payload did not succeed.
+      job.enabled = false;
+      job.state.nextRunAtMs = undefined;
     } else if (result.status === "error" && isJobEnabled(job)) {
       const retryDecision = resolveTransientCronRetryDecision({
         cronConfig: state.deps.cronConfig,
