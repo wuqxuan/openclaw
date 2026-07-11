@@ -10,7 +10,7 @@ import { resolveChannelHealthRecoveryOwnership } from "./channel-health-policy.j
 import type { ChannelManager, ChannelRuntimeSnapshot } from "./server-channels.js";
 
 function createMockChannelManager(overrides?: Partial<ChannelManager>): ChannelManager {
-  const getRuntimeSnapshot =
+  const getRuntimeSnapshot: ChannelManager["getRuntimeSnapshot"] =
     overrides?.getRuntimeSnapshot ?? vi.fn(() => ({ channels: {}, channelAccounts: {} }));
   const base: ChannelManager = {
     getRuntimeSnapshot,
