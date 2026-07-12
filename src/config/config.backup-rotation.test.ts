@@ -244,12 +244,14 @@ describe("config backup rotation", () => {
       const { existsSync } = await import("node:fs");
 
       let readAttempts = 0;
-      const flakyRead: typeof fs.readFile = async (filePath, encoding) => {
+      // Narrow stub matches PreUpdateSnapshotFs.readFile; full typeof fs.readFile
+      // claims buffer overloads and fails check-test-types (TS2322).
+      const flakyRead = async (filePath: string, encoding: "utf-8"): Promise<string> => {
         readAttempts += 1;
         if (readAttempts === 1) {
           throw Object.assign(new Error("EACCES"), { code: "EACCES" });
         }
-        return fs.readFile(filePath as string, encoding as "utf-8");
+        return fs.readFile(filePath, encoding);
       };
 
       await createPreUpdateConfigSnapshot({
@@ -276,12 +278,17 @@ describe("config backup rotation", () => {
       const { existsSync } = await import("node:fs");
 
       let writeAttempts = 0;
-      const flakyWrite: typeof fs.writeFile = async (filePath, data, options) => {
+      // Narrow stub matches PreUpdateSnapshotFs.writeFile (not full fs.writeFile).
+      const flakyWrite = async (
+        filePath: string,
+        data: string,
+        options: { encoding: "utf-8"; mode: number; flag: "w" },
+      ): Promise<void> => {
         writeAttempts += 1;
         if (writeAttempts === 1) {
           throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
         }
-        return fs.writeFile(filePath as string, data as string, options as { mode?: number });
+        await fs.writeFile(filePath, data, options);
       };
 
       await createPreUpdateConfigSnapshot({
@@ -313,14 +320,19 @@ describe("config backup rotation", () => {
       });
       let readAttempts = 0;
       let writeAttempts = 0;
-      const gatedRead: typeof fs.readFile = async (filePath, encoding) => {
+      // Narrow stubs match PreUpdateSnapshotFs; full fs overloads fail check-test-types.
+      const gatedRead = async (filePath: string, encoding: "utf-8"): Promise<string> => {
         readAttempts += 1;
         await readGate;
-        return fs.readFile(filePath as string, encoding as "utf-8");
+        return fs.readFile(filePath, encoding);
       };
-      const countingWrite: typeof fs.writeFile = async (filePath, data, options) => {
+      const countingWrite = async (
+        filePath: string,
+        data: string,
+        options: { encoding: "utf-8"; mode: number; flag: "w" },
+      ): Promise<void> => {
         writeAttempts += 1;
-        return fs.writeFile(filePath as string, data as string, options as { mode?: number });
+        await fs.writeFile(filePath, data, options);
       };
 
       const first = createPreUpdateConfigSnapshot({
