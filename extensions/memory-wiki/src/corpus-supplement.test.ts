@@ -39,12 +39,14 @@ describe("memory-wiki corpus supplement", () => {
     const getAppConfig = vi.fn(() => appConfig);
     const supplement = createWikiCorpusSupplement({ resolveConfig, getAppConfig });
 
+    const deadline = new AbortController();
     await supplement.search({
       query: "support handbook",
       maxResults: 4,
       agentId: "support",
       agentSessionKey: "agent:support:main",
       sandboxed: true,
+      signal: deadline.signal,
     });
     await supplement.get({
       lookup: "marketing-plan",
@@ -72,6 +74,7 @@ describe("memory-wiki corpus supplement", () => {
       maxResults: 4,
       searchBackend: "local",
       searchCorpus: "wiki",
+      signal: deadline.signal,
     });
     expect(queryMocks.getMemoryWikiPage).toHaveBeenCalledWith({
       config: expect.objectContaining({

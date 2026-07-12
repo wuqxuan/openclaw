@@ -14,6 +14,7 @@ export function createWikiCorpusSupplement(params: {
       agentId?: string;
       agentSessionKey?: string;
       sandboxed?: boolean;
+      signal?: AbortSignal;
     }) => {
       const appConfig = params.getAppConfig();
       const config = params.resolveConfig(input.agentId, appConfig);
@@ -27,6 +28,10 @@ export function createWikiCorpusSupplement(params: {
         maxResults: input.maxResults,
         searchBackend: "local",
         searchCorpus: "wiki",
+        // Forward the memory_search deadline so exhaustive underfill scans stop
+        // when the tool has already timed out (do not change completeness when
+        // the search finishes within budget).
+        signal: input.signal,
       });
     },
     get: async (input: {

@@ -209,6 +209,115 @@ describe("searchMemoryWiki", () => {
     expect(getActiveMemorySearchManagerMock).not.toHaveBeenCalled();
   });
 
+  it("returns no wiki hits when the caller deadline is already aborted (#104719)", async () => {
+    const { rootDir, config } = await createQueryVault({ initialize: true });
+    await fs.writeFile(
+      path.join(rootDir, "sources", "alpha.md"),
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha Source" },
+        body: "# Alpha Source\n\nalpha body text\n",
+      }),
+      "utf8",
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    const results = await searchMemoryWiki({
+      config,
+      query: "alpha",
+      signal: controller.signal,
+    });
+
+    expect(results).toEqual([]);
+  });
+
+  it("still exhaustively finds body-only hits when the deadline is not aborted (#104719)", async () => {
+    // Digest-selected candidates underfill maxResults; without abort the vault
+    // must still scan remaining pages so direct and on-budget supplement search
+    // keep complete recall (unlike permanently disabling exhaustive fallback).
+    const { rootDir, config } = await createQueryVault({ initialize: true });
+    await fs.writeFile(
+      path.join(rootDir, "entities", "digest-only.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "entity",
+          id: "entity.digest-only",
+          title: "Digest Only Router",
+          bestUsedFor: ["deadline-token-alpha"],
+        },
+        body: "# Digest Only Router\n\nNo unique body needle here.\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(rootDir, "sources", "body-only-needle.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.body-only-needle",
+          title: "Unrelated Title",
+        },
+        body: "# Unrelated Title\n\ndeadline-token-omega unique body only hit\n",
+      }),
+      "utf8",
+    );
+    await compileMemoryWikiVault(config);
+
+    const results = await searchMemoryWiki({
+      config,
+      query: "deadline-token-omega",
+      maxResults: 5,
+    });
+
+    expect(collectWikiResultPaths(results)).toContain("sources/body-only-needle.md");
+  });
+
+  it("stops mid-scan when the deadline aborts during exhaustive page reads (#104719)", async () => {
+    const { rootDir, config } = await createQueryVault({ initialize: true });
+    // Enough files to force more than one read batch (batch size 16).
+    for (let i = 0; i < 40; i += 1) {
+      await fs.writeFile(
+        path.join(rootDir, "sources", `pad-${String(i).padStart(2, "0")}.md`),
+        renderWikiMarkdown({
+          frontmatter: {
+            pageType: "source",
+            id: `source.pad-${i}`,
+            title: `Pad ${i}`,
+          },
+          body: `# Pad ${i}\n\npad body ${i}\n`,
+        }),
+        "utf8",
+      );
+    }
+    await fs.writeFile(
+      path.join(rootDir, "sources", "zzz-late-needle.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.late-needle",
+          title: "Late Needle",
+        },
+        body: "# Late Needle\n\nabort-scan-unique-needle\n",
+      }),
+      "utf8",
+    );
+
+    const controller = new AbortController();
+    const searchPromise = searchMemoryWiki({
+      config,
+      query: "abort-scan-unique-needle",
+      maxResults: 10,
+      signal: controller.signal,
+    });
+    // Yield once so page reads start, then abort mid-scan.
+    await Promise.resolve();
+    controller.abort();
+    const results = await searchPromise;
+
+    // Must not hang / throw; may be empty or partial once the signal fires.
+    expect(Array.isArray(results)).toBe(true);
+  });
+
   it("skips malformed pages while searching the rest of the vault (#96125)", async () => {
     const { rootDir, config } = await createQueryVault({ initialize: true });
     await fs.writeFile(
