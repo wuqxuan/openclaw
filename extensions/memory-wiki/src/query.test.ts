@@ -215,15 +215,7 @@ describe("searchMemoryWiki", () => {
   });
 
   it("returns no wiki hits when the caller deadline is already aborted (#104719)", async () => {
-    const { rootDir, config } = await createQueryVault({ initialize: true });
-    await fs.writeFile(
-      path.join(rootDir, "sources", "alpha.md"),
-      renderWikiMarkdown({
-        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha Source" },
-        body: "# Alpha Source\n\nalpha body text\n",
-      }),
-      "utf8",
-    );
+    const { rootDir, config } = await createQueryVault();
     const controller = new AbortController();
     controller.abort();
 
@@ -234,6 +226,7 @@ describe("searchMemoryWiki", () => {
     });
 
     expect(results).toEqual([]);
+    await expect(fs.access(rootDir)).rejects.toThrow();
   });
 
   it("still exhaustively finds body-only hits when the deadline is not aborted (#104719)", async () => {
@@ -360,7 +353,7 @@ describe("searchMemoryWiki", () => {
       .spyOn(fs, "readFile")
       .mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
         const result = await originalReadFile(...args);
-        const absolutePath = String(args[0] ?? "");
+        const absolutePath = typeof args[0] === "string" ? args[0] : "";
         if (
           absolutePath.endsWith(".md") &&
           absolutePath.includes(`${path.sep}sources${path.sep}`)

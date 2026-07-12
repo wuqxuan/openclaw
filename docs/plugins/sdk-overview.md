@@ -210,7 +210,10 @@ advertised node command.
 
 Memory prompt supplement builders receive optional `agentId`,
 `agentSessionKey`, and `sandboxed` context. Memory corpus supplement `search`
-and `get` calls receive optional `agentId` and `sandboxed` context. Plugins with
+and `get` calls receive optional `agentId`, `agentSessionKey`, and `sandboxed`
+context. Search calls may also receive an optional caller-owned `signal`.
+Supplements should check that signal before and during large I/O, stop new work
+after cancellation, and return any completed partial results. Plugins with
 agent-owned storage should resolve that storage for each call instead of
 capturing one global path during registration. If an agent id is required but
 missing in a multi-agent operation, fail closed rather than choosing an

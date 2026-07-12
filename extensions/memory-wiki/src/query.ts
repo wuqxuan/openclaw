@@ -1528,6 +1528,11 @@ export async function searchMemoryWiki(params: {
     sandboxed: params.sandboxed,
     operation: "wiki_search",
   });
+  // A caller-owned deadline may already have expired before this search starts.
+  // Return before vault initialization so cancelled reads cannot mutate storage.
+  if (params.signal?.aborted) {
+    return [];
+  }
   await initializeMemoryWikiVault(effectiveConfig);
   const maxResults = normalizePositiveInteger(params.maxResults, 10);
   const mode = params.mode ?? "auto";
