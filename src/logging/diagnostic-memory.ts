@@ -1,4 +1,5 @@
 // Diagnostic memory helpers capture process memory facts for support diagnostics.
+import v8 from "node:v8";
 import {
   emitInternalDiagnosticEvent as emitDiagnosticEvent,
   type DiagnosticMemoryPressureEvent,
@@ -11,8 +12,11 @@ import { createSubsystemLogger } from "./subsystem.js";
 const MB = 1024 * 1024;
 const DEFAULT_RSS_WARNING_BYTES = 1536 * MB;
 const DEFAULT_RSS_CRITICAL_BYTES = 3072 * MB;
+// Floors keep small-host protection when V8's effective limit is at or near the historic defaults.
 const DEFAULT_HEAP_WARNING_BYTES = 1024 * MB;
 const DEFAULT_HEAP_CRITICAL_BYTES = 2048 * MB;
+const HEAP_WARNING_OF_LIMIT = 0.6;
+const HEAP_CRITICAL_OF_LIMIT = 0.75;
 const DEFAULT_RSS_GROWTH_WARNING_BYTES = 512 * MB;
 const DEFAULT_RSS_GROWTH_CRITICAL_BYTES = 1024 * MB;
 const DEFAULT_GROWTH_WINDOW_MS = 10 * 60 * 1000;
@@ -58,14 +62,58 @@ function normalizeMemoryUsage(memory: NodeJS.MemoryUsage): DiagnosticMemoryUsage
   };
 }
 
+/**
+ * Derive default heap pressure thresholds from V8's effective heap limit.
+ * Scales with `--max-old-space-size` while keeping historic 1 GiB / 2 GiB floors
+ * so constrained hosts stay protected (issue #104631).
+ */
+export function resolveAdaptiveHeapThresholdBytes(heapSizeLimitBytes: number): {
+  heapUsedWarningBytes: number;
+  heapUsedCriticalBytes: number;
+} {
+  const limit =
+    typeof heapSizeLimitBytes === "number" &&
+    Number.isFinite(heapSizeLimitBytes) &&
+    heapSizeLimitBytes > 0
+      ? heapSizeLimitBytes
+      : DEFAULT_HEAP_CRITICAL_BYTES;
+  return {
+    heapUsedWarningBytes: Math.max(
+      Math.floor(limit * HEAP_WARNING_OF_LIMIT),
+      DEFAULT_HEAP_WARNING_BYTES,
+    ),
+    heapUsedCriticalBytes: Math.max(
+      Math.floor(limit * HEAP_CRITICAL_OF_LIMIT),
+      DEFAULT_HEAP_CRITICAL_BYTES,
+    ),
+  };
+}
+
+function resolveDefaultHeapThresholdBytes(): {
+  heapUsedWarningBytes: number;
+  heapUsedCriticalBytes: number;
+} {
+  return resolveAdaptiveHeapThresholdBytes(v8.getHeapStatistics().heap_size_limit);
+}
+
 function resolveThresholds(
   thresholds?: DiagnosticMemoryThresholds,
 ): Required<DiagnosticMemoryThresholds> {
+  const needsAdaptiveHeap =
+    thresholds?.heapUsedWarningBytes === undefined ||
+    thresholds?.heapUsedCriticalBytes === undefined;
+  const adaptiveHeap = needsAdaptiveHeap ? resolveDefaultHeapThresholdBytes() : undefined;
   return {
     rssWarningBytes: thresholds?.rssWarningBytes ?? DEFAULT_RSS_WARNING_BYTES,
     rssCriticalBytes: thresholds?.rssCriticalBytes ?? DEFAULT_RSS_CRITICAL_BYTES,
-    heapUsedWarningBytes: thresholds?.heapUsedWarningBytes ?? DEFAULT_HEAP_WARNING_BYTES,
-    heapUsedCriticalBytes: thresholds?.heapUsedCriticalBytes ?? DEFAULT_HEAP_CRITICAL_BYTES,
+    heapUsedWarningBytes:
+      thresholds?.heapUsedWarningBytes ??
+      adaptiveHeap?.heapUsedWarningBytes ??
+      DEFAULT_HEAP_WARNING_BYTES,
+    heapUsedCriticalBytes:
+      thresholds?.heapUsedCriticalBytes ??
+      adaptiveHeap?.heapUsedCriticalBytes ??
+      DEFAULT_HEAP_CRITICAL_BYTES,
     rssGrowthWarningBytes: thresholds?.rssGrowthWarningBytes ?? DEFAULT_RSS_GROWTH_WARNING_BYTES,
     rssGrowthCriticalBytes: thresholds?.rssGrowthCriticalBytes ?? DEFAULT_RSS_GROWTH_CRITICAL_BYTES,
     growthWindowMs: thresholds?.growthWindowMs ?? DEFAULT_GROWTH_WINDOW_MS,

@@ -2,14 +2,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import v8 from "node:v8";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   onInternalDiagnosticEvent,
   onDiagnosticEvent,
   resetDiagnosticEventsForTest,
   type DiagnosticEventPayload,
+  type DiagnosticMemoryPressureEvent,
 } from "../infra/diagnostic-events.js";
-import { emitDiagnosticMemorySample, resetDiagnosticMemoryForTest } from "./diagnostic-memory.js";
+import {
+  emitDiagnosticMemorySample,
+  resetDiagnosticMemoryForTest,
+  resolveAdaptiveHeapThresholdBytes,
+} from "./diagnostic-memory.js";
 import {
   readLatestDiagnosticStabilityBundleSync,
   resetDiagnosticStabilityBundleForTest,
@@ -225,6 +231,130 @@ describe("diagnostic memory", () => {
         0,
       ),
     ).toBe(1);
+  });
+
+  it("keeps historic heap floors on constrained V8 limits (#104631)", () => {
+    // Sub-default V8 limit: 60%/75% ratios fall below historic floors → clamp to 1 GiB / 2 GiB.
+    expect(resolveAdaptiveHeapThresholdBytes(1536 * 1024 * 1024)).toEqual({
+      heapUsedWarningBytes: 1024 * 1024 * 1024,
+      heapUsedCriticalBytes: 2048 * 1024 * 1024,
+    });
+    // Default-ish 2 GiB limit: warning ratio (1.2 GiB) is already above the 1 GiB floor;
+    // critical still floors to 2 GiB because 75% of 2 GiB is only 1.5 GiB.
+    expect(resolveAdaptiveHeapThresholdBytes(2 * 1024 * 1024 * 1024)).toEqual({
+      heapUsedWarningBytes: Math.floor(2 * 1024 * 1024 * 1024 * 0.6),
+      heapUsedCriticalBytes: 2048 * 1024 * 1024,
+    });
+  });
+
+  it("scales heap thresholds with enlarged V8 limits (#104631)", () => {
+    // 8 GiB limit: warning 60% = 4.8 GiB, critical 75% = 6 GiB (above floors).
+    const eightGib = 8 * 1024 * 1024 * 1024;
+    expect(resolveAdaptiveHeapThresholdBytes(eightGib)).toEqual({
+      heapUsedWarningBytes: Math.floor(eightGib * 0.6),
+      heapUsedCriticalBytes: Math.floor(eightGib * 0.75),
+    });
+  });
+
+  it("does not emit critical heap_threshold at 2 GiB when adaptive critical is higher (#104631)", () => {
+    // Reproduces the reported false positive: 2 GiB heapUsed on an 8 GiB V8 limit must not
+    // fire critical under adaptive defaults. Inject the enlarged thresholds directly (same
+    // values resolveAdaptiveHeapThresholdBytes produces for an 8 GiB limit).
+    const eightGib = 8 * 1024 * 1024 * 1024;
+    const adaptive = resolveAdaptiveHeapThresholdBytes(eightGib);
+    const events: DiagnosticEventPayload[] = [];
+    const stop = onDiagnosticEvent((event) => events.push(event));
+
+    emitDiagnosticMemorySample({
+      now: 1000,
+      memoryUsage: memoryUsage({
+        rss: 500 * 1024 * 1024,
+        heapUsed: 2 * 1024 * 1024 * 1024,
+      }),
+      thresholds: {
+        // Keep RSS out of the way; only heap adaptive defaults under test.
+        rssWarningBytes: 10 * 1024 * 1024 * 1024,
+        rssCriticalBytes: 20 * 1024 * 1024 * 1024,
+        heapUsedWarningBytes: adaptive.heapUsedWarningBytes,
+        heapUsedCriticalBytes: adaptive.heapUsedCriticalBytes,
+        pressureRepeatMs: 60_000,
+      },
+    });
+    stop();
+
+    const pressureEvents = events.filter(
+      (event): event is DiagnosticMemoryPressureEvent =>
+        event.type === "diagnostic.memory.pressure",
+    );
+    expect(pressureEvents).toHaveLength(0);
+    expect(adaptive.heapUsedCriticalBytes).toBeGreaterThan(2 * 1024 * 1024 * 1024);
+  });
+
+  it("emits critical heap_threshold when heapUsed crosses adaptive critical (#104631)", () => {
+    const eightGib = 8 * 1024 * 1024 * 1024;
+    const adaptive = resolveAdaptiveHeapThresholdBytes(eightGib);
+    const events: DiagnosticEventPayload[] = [];
+    const stop = onDiagnosticEvent((event) => events.push(event));
+
+    emitDiagnosticMemorySample({
+      now: 1000,
+      memoryUsage: memoryUsage({
+        rss: 500 * 1024 * 1024,
+        heapUsed: adaptive.heapUsedCriticalBytes + 1,
+      }),
+      thresholds: {
+        rssWarningBytes: 10 * 1024 * 1024 * 1024,
+        rssCriticalBytes: 20 * 1024 * 1024 * 1024,
+        heapUsedWarningBytes: adaptive.heapUsedWarningBytes,
+        heapUsedCriticalBytes: adaptive.heapUsedCriticalBytes,
+        pressureRepeatMs: 60_000,
+      },
+    });
+    stop();
+
+    const pressureEvents = events.filter(
+      (event): event is DiagnosticMemoryPressureEvent =>
+        event.type === "diagnostic.memory.pressure",
+    );
+    expect(pressureEvents).toHaveLength(1);
+    expect(pressureEvents[0]).toMatchObject({
+      level: "critical",
+      reason: "heap_threshold",
+      thresholdBytes: adaptive.heapUsedCriticalBytes,
+    });
+  });
+
+  it("emits default adaptive heap_threshold from process V8 limit (#104631)", () => {
+    // Match production path: resolveThresholds reads process V8 heap_size_limit.
+    const adaptive = resolveAdaptiveHeapThresholdBytes(v8.getHeapStatistics().heap_size_limit);
+    const events: DiagnosticEventPayload[] = [];
+    const stop = onDiagnosticEvent((event) => events.push(event));
+
+    emitDiagnosticMemorySample({
+      now: 1000,
+      memoryUsage: memoryUsage({
+        rss: 100 * 1024 * 1024,
+        heapUsed: adaptive.heapUsedWarningBytes + 1,
+      }),
+      // Omit heap overrides so production resolveThresholds uses adaptive V8 defaults.
+      thresholds: {
+        rssWarningBytes: 10 * 1024 * 1024 * 1024,
+        rssCriticalBytes: 20 * 1024 * 1024 * 1024,
+        pressureRepeatMs: 60_000,
+      },
+    });
+    stop();
+
+    const pressureEvents = events.filter(
+      (event): event is DiagnosticMemoryPressureEvent =>
+        event.type === "diagnostic.memory.pressure",
+    );
+    expect(pressureEvents).toHaveLength(1);
+    expect(pressureEvents[0]).toMatchObject({
+      level: "warning",
+      reason: "heap_threshold",
+      thresholdBytes: adaptive.heapUsedWarningBytes,
+    });
   });
 
   it("resolves session store paths only for enabled critical bundle writes", () => {
