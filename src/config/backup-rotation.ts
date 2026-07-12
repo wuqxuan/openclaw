@@ -114,7 +114,10 @@ interface PreUpdateSnapshotFs {
   existsSync: (path: string) => boolean;
 }
 
-const preUpdateConfigSnapshotsWritten = new Set<string>();
+// In-flight or completed snapshot ops keyed by resolved config path.
+// Success stays mapped so concurrent and later callers share one snapshot;
+// failure removes the entry so a later call can retry after transient I/O errors.
+const preUpdateConfigSnapshotOps = new Map<string, Promise<void>>();
 
 /**
  * Captures the first on-disk config state for an update attempt.
@@ -130,22 +133,29 @@ export async function createPreUpdateConfigSnapshot(params: {
     return;
   }
   const snapshotKey = path.resolve(params.configPath);
-  if (preUpdateConfigSnapshotsWritten.has(snapshotKey)) {
+  const existing = preUpdateConfigSnapshotOps.get(snapshotKey);
+  if (existing) {
+    await existing;
     return;
   }
-  // Mark before I/O so a failed best-effort write cannot loop on every later write.
-  preUpdateConfigSnapshotsWritten.add(snapshotKey);
-  const snapshotPath = `${params.configPath}.pre-update`;
-  try {
-    const content = await params.fs.readFile(params.configPath, "utf-8");
-    await params.fs.writeFile(snapshotPath, content, {
-      encoding: "utf-8",
-      mode: 0o600,
-      flag: "w",
-    });
-  } catch {
-    // best-effort, do not block update
-  }
+
+  const op = (async () => {
+    const snapshotPath = `${params.configPath}.pre-update`;
+    try {
+      const content = await params.fs.readFile(params.configPath, "utf-8");
+      await params.fs.writeFile(snapshotPath, content, {
+        encoding: "utf-8",
+        mode: 0o600,
+        flag: "w",
+      });
+    } catch {
+      // best-effort, do not block update — drop the slot so a later call can retry
+      preUpdateConfigSnapshotOps.delete(snapshotKey);
+    }
+  })();
+
+  preUpdateConfigSnapshotOps.set(snapshotKey, op);
+  await op;
 }
 
 /** Runs rotation, primary copy, permission hardening, then orphan pruning. */

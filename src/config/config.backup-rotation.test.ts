@@ -235,4 +235,108 @@ describe("config backup rotation", () => {
       await expectPathMissing(`${configPath}.pre-update`);
     });
   });
+
+  it("createPreUpdateConfigSnapshot retries after a failed read", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      const content = JSON.stringify({ version: "retry-read" });
+      await fs.writeFile(configPath, content, { mode: 0o600 });
+      const { existsSync } = await import("node:fs");
+
+      let readAttempts = 0;
+      const flakyRead: typeof fs.readFile = async (filePath, encoding) => {
+        readAttempts += 1;
+        if (readAttempts === 1) {
+          throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+        }
+        return fs.readFile(filePath as string, encoding as "utf-8");
+      };
+
+      await createPreUpdateConfigSnapshot({
+        configPath,
+        fs: { writeFile: fs.writeFile, readFile: flakyRead, existsSync },
+      });
+      await expectPathMissing(`${configPath}.pre-update`);
+
+      await createPreUpdateConfigSnapshot({
+        configPath,
+        fs: { writeFile: fs.writeFile, readFile: flakyRead, existsSync },
+      });
+
+      await expect(fs.readFile(`${configPath}.pre-update`, "utf-8")).resolves.toBe(content);
+      expect(readAttempts).toBe(2);
+    });
+  });
+
+  it("createPreUpdateConfigSnapshot retries after a failed write", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      const content = JSON.stringify({ version: "retry-write" });
+      await fs.writeFile(configPath, content, { mode: 0o600 });
+      const { existsSync } = await import("node:fs");
+
+      let writeAttempts = 0;
+      const flakyWrite: typeof fs.writeFile = async (filePath, data, options) => {
+        writeAttempts += 1;
+        if (writeAttempts === 1) {
+          throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
+        }
+        return fs.writeFile(filePath as string, data as string, options as { mode?: number });
+      };
+
+      await createPreUpdateConfigSnapshot({
+        configPath,
+        fs: { writeFile: flakyWrite, readFile: fs.readFile, existsSync },
+      });
+      await expectPathMissing(`${configPath}.pre-update`);
+
+      await createPreUpdateConfigSnapshot({
+        configPath,
+        fs: { writeFile: flakyWrite, readFile: fs.readFile, existsSync },
+      });
+
+      await expect(fs.readFile(`${configPath}.pre-update`, "utf-8")).resolves.toBe(content);
+      expect(writeAttempts).toBe(2);
+    });
+  });
+
+  it("createPreUpdateConfigSnapshot dedupes concurrent callers for one snapshot", async () => {
+    await withTempHome(async () => {
+      const configPath = resolveConfigPathFromTempState();
+      const content = JSON.stringify({ version: "concurrent" });
+      await fs.writeFile(configPath, content, { mode: 0o600 });
+      const { existsSync } = await import("node:fs");
+
+      let releaseRead!: () => void;
+      const readGate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let readAttempts = 0;
+      let writeAttempts = 0;
+      const gatedRead: typeof fs.readFile = async (filePath, encoding) => {
+        readAttempts += 1;
+        await readGate;
+        return fs.readFile(filePath as string, encoding as "utf-8");
+      };
+      const countingWrite: typeof fs.writeFile = async (filePath, data, options) => {
+        writeAttempts += 1;
+        return fs.writeFile(filePath as string, data as string, options as { mode?: number });
+      };
+
+      const first = createPreUpdateConfigSnapshot({
+        configPath,
+        fs: { writeFile: countingWrite, readFile: gatedRead, existsSync },
+      });
+      const second = createPreUpdateConfigSnapshot({
+        configPath,
+        fs: { writeFile: countingWrite, readFile: gatedRead, existsSync },
+      });
+      releaseRead();
+      await Promise.all([first, second]);
+
+      await expect(fs.readFile(`${configPath}.pre-update`, "utf-8")).resolves.toBe(content);
+      expect(readAttempts).toBe(1);
+      expect(writeAttempts).toBe(1);
+    });
+  });
 });
