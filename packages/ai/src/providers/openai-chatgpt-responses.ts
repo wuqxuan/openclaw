@@ -149,11 +149,28 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new Error("Request was aborted"));
       return;
     }
-    const timeout = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    // Named listener so both timeout completion and abort can unregister it.
+    // Leaving the listener on a long-lived signal after successful waits leaks
+    // the closure (timeout/reject) on every retry sleep.
+    let settled = false;
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
       reject(new Error("Request was aborted"));
-    });
+    };
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort);
   });
 }
 
@@ -881,6 +898,9 @@ async function* parseSSE(response: Response): AsyncGenerator<Record<string, unkn
 // Test-only re-export of the bounded SSE parser. Mirrors
 // `parseAnthropicSseBodyForTest` / `iterateSseMessagesForTest` patterns.
 export const parseSSEForTest = parseSSE;
+
+// Test-only re-export of the retry sleep helper (abort-listener lifecycle).
+export const sleepForTest = sleep;
 
 // ============================================================================
 // WebSocket Parsing
