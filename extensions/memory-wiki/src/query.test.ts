@@ -7,7 +7,12 @@ import type { OpenClawConfig } from "../api.js";
 import { compileMemoryWikiVault } from "./compile.js";
 import type { MemoryWikiPluginConfig } from "./config.js";
 import { renderWikiMarkdown } from "./markdown.js";
-import { getMemoryWikiPage, isSessionMemoryPath, searchMemoryWiki } from "./query.js";
+import {
+  getMemoryWikiPage,
+  isSessionMemoryPath,
+  readQueryableWikiPages,
+  searchMemoryWiki,
+} from "./query.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
 
 const {
@@ -274,8 +279,10 @@ describe("searchMemoryWiki", () => {
 
   it("stops mid-scan when the deadline aborts during exhaustive page reads (#104719)", async () => {
     const { rootDir, config } = await createQueryVault({ initialize: true });
-    // Enough files to force more than one read batch (batch size 16).
-    for (let i = 0; i < 40; i += 1) {
+    // Representative underfill vault: many padding pages so exhaustive scan needs
+    // multiple 16-file batches (issue-scale proof without a 77 MB live Gateway vault).
+    const padCount = 96;
+    for (let i = 0; i < padCount; i += 1) {
       await fs.writeFile(
         path.join(rootDir, "sources", `pad-${String(i).padStart(2, "0")}.md`),
         renderWikiMarkdown({
@@ -303,19 +310,77 @@ describe("searchMemoryWiki", () => {
     );
 
     const controller = new AbortController();
-    const searchPromise = searchMemoryWiki({
+    // Abort on a microtask so the first batch can start, then stop further batches.
+    queueMicrotask(() => {
+      controller.abort();
+    });
+    const results = await searchMemoryWiki({
       config,
       query: "abort-scan-unique-needle",
       maxResults: 10,
       signal: controller.signal,
     });
-    // Yield once so page reads start, then abort mid-scan.
-    await Promise.resolve();
-    controller.abort();
-    const results = await searchPromise;
 
     // Must not hang / throw; may be empty or partial once the signal fires.
     expect(Array.isArray(results)).toBe(true);
+    // Late needle is sorted after pads; abort during batching must not require a
+    // full remaining-vault completion to return (no orphan full-scan contract).
+    // Partial or empty is fine; hanging or throwing is not.
+  });
+
+  it("returns partial pages and stops further batch reads after abort (#104719)", async () => {
+    const { rootDir } = await createQueryVault({ initialize: true });
+    const padCount = 80;
+    for (let i = 0; i < padCount; i += 1) {
+      await fs.writeFile(
+        path.join(rootDir, "sources", `batch-pad-${String(i).padStart(2, "0")}.md`),
+        renderWikiMarkdown({
+          frontmatter: {
+            pageType: "source",
+            id: `source.batch-pad-${i}`,
+            title: `Batch Pad ${i}`,
+          },
+          body: `# Batch Pad ${i}\n\nbatch pad body ${i}\n`,
+        }),
+        "utf8",
+      );
+    }
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    // Pre-aborted: no page reads (empty partial result, not a full vault load).
+    expect(await readQueryableWikiPages(rootDir, preAborted.signal)).toEqual([]);
+
+    // Representative vault: abort after the first full batch of page reads so the
+    // remaining batches never start (proves deadline stops further host I/O).
+    const mid = new AbortController();
+    let mdReads = 0;
+    const originalReadFile = fs.readFile.bind(fs);
+    const readFileSpy = vi
+      .spyOn(fs, "readFile")
+      .mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+        const result = await originalReadFile(...args);
+        const absolutePath = String(args[0] ?? "");
+        if (
+          absolutePath.endsWith(".md") &&
+          absolutePath.includes(`${path.sep}sources${path.sep}`)
+        ) {
+          mdReads += 1;
+          if (mdReads >= 16) {
+            mid.abort();
+          }
+        }
+        return result;
+      });
+    try {
+      const partial = await readQueryableWikiPages(rootDir, mid.signal);
+      expect(partial.length).toBeGreaterThan(0);
+      expect(partial.length).toBeLessThan(padCount);
+      // At most one in-flight batch after the abort trips at the 16th page read.
+      expect(mdReads).toBeLessThan(padCount);
+    } finally {
+      readFileSpy.mockRestore();
+    }
   });
 
   it("skips malformed pages while searching the rest of the vault (#96125)", async () => {

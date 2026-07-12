@@ -293,7 +293,8 @@ async function readQueryableWikiPagesByPaths(
         const absolutePath = path.join(rootDir, relativePath);
         const raw = await fs.readFile(absolutePath, "utf8");
         const summary = toWikiPageSummary({ absolutePath, relativePath, raw });
-        return summary ? { ...summary, raw } : null;
+        // Avoid object spread in map (oxc/no-map-spread); keep partial-result shape.
+        return summary ? Object.assign({}, summary, { raw }) : null;
       }),
     );
     for (const page of batchPages) {
