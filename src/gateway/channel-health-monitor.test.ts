@@ -553,6 +553,145 @@ describe("channel-health-monitor", () => {
     monitor.stop();
   });
 
+  it("grants one pending completion pass at maxRestartsPerHour then caps further pending loops", async () => {
+    const checkIntervalMs = 1_000;
+    const advanceTick = () => vi.advanceTimersByTimeAsync(checkIntervalMs);
+    const account: Partial<ChannelAccountSnapshot> = disconnectedAccount(Date.now() - 300_000);
+    let callCount = 0;
+    const manager = createSnapshotManager(
+      {
+        discord: {
+          default: account,
+        },
+      },
+      {
+        startChannel: vi.fn(async () => {
+          callCount += 1;
+          account.running = false;
+          account.connected = false;
+          account.restartPending = true;
+          account.reconnectAttempts = 0;
+        }),
+      },
+    );
+    const monitor = startDefaultMonitor(manager, {
+      checkIntervalMs,
+      cooldownCycles: 1,
+      maxRestartsPerHour: 2,
+    });
+
+    // Budgeted restart (slot 1).
+    await advanceTick();
+    expect(callCount).toBe(1);
+
+    // Pending continuation still under budget (slot 2).
+    await advanceTick();
+    expect(callCount).toBe(2);
+
+    // Cap hit: one completion pass finishes the already-budgeted recovery.
+    await advanceTick();
+    expect(callCount).toBe(3);
+
+    // Further pending ticks must not thrash past the hourly budget.
+    for (let i = 0; i < 5; i++) {
+      await advanceTick();
+    }
+    expect(callCount).toBe(3);
+    monitor.stop();
+  });
+
+  it("preserves pending completion when maxRestartsPerHour is 1", async () => {
+    const checkIntervalMs = 1_000;
+    const advanceTick = () => vi.advanceTimersByTimeAsync(checkIntervalMs);
+    const account: Partial<ChannelAccountSnapshot> = disconnectedAccount(Date.now() - 300_000);
+    let callCount = 0;
+    const manager = createSnapshotManager(
+      {
+        discord: {
+          default: account,
+        },
+      },
+      {
+        startChannel: vi.fn(async () => {
+          callCount += 1;
+          account.running = false;
+          account.connected = false;
+          account.restartPending = true;
+          account.reconnectAttempts = 0;
+        }),
+      },
+    );
+    const monitor = startDefaultMonitor(manager, {
+      checkIntervalMs,
+      cooldownCycles: 1,
+      maxRestartsPerHour: 1,
+    });
+
+    // First budgeted restart consumes the only hourly slot.
+    await advanceTick();
+    expect(callCount).toBe(1);
+
+    // Pending continuation must still run once (completion of that cycle).
+    await advanceTick();
+    expect(callCount).toBe(2);
+
+    // Additional pending passes are capped.
+    for (let i = 0; i < 4; i++) {
+      await advanceTick();
+    }
+    expect(callCount).toBe(2);
+    monitor.stop();
+  });
+
+  it("resets pending completion pass when the hourly window rolls over", async () => {
+    const account = disconnectedAccount(Date.now() - 300_000);
+    let callCount = 0;
+    const manager = createSnapshotManager(
+      {
+        discord: {
+          default: account,
+        },
+      },
+      {
+        startChannel: vi.fn(async () => {
+          callCount += 1;
+          account.running = false;
+          account.connected = false;
+          account.restartPending = true;
+          account.reconnectAttempts = 0;
+        }),
+      },
+    );
+    const monitor = startDefaultMonitor(manager, {
+      checkIntervalMs: 100,
+      cooldownCycles: 0,
+      maxRestartsPerHour: 2,
+    });
+
+    // Exhaust budgeted slots + one completion pass.
+    await vi.advanceTimersByTimeAsync(350);
+    expect(callCount).toBe(3);
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(callCount).toBe(3);
+
+    // Advance just under one hour from the first restart, then past the prune edge.
+    await vi.advanceTimersByTimeAsync(3_599_150);
+    expect(callCount).toBe(3);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callCount).toBe(4);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callCount).toBe(5);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callCount).toBe(6);
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(callCount).toBe(6);
+    monitor.stop();
+  });
+
   it("caps at 3 health-monitor restarts per channel per hour", async () => {
     const manager = createSnapshotManager({
       discord: {

@@ -51,6 +51,12 @@ export type ChannelHealthMonitor = {
 type RestartRecord = {
   lastRestartAt: number;
   restartsThisHour: { at: number }[];
+  /**
+   * True after a pending-recovery completion pass was already granted while the
+   * hourly cap was full. Cleared when a new budgeted restart is recorded or when
+   * pruning reopens capacity so later windows are not starved forever.
+   */
+  pendingCompletionPassUsed?: boolean;
 };
 
 function resolveTimingPolicy(
@@ -86,8 +92,18 @@ export function startChannelHealthMonitor(deps: ChannelHealthMonitorDeps): Chann
 
   const rKey = (channelId: string, accountId: string) => `${channelId}:${accountId}`;
 
-  function pruneOldRestarts(record: RestartRecord, now: number) {
+  function pruneOldRestarts(record: RestartRecord, now: number, maxRestarts: number) {
+    const before = record.restartsThisHour.length;
     record.restartsThisHour = record.restartsThisHour.filter((r) => now - r.at < ONE_HOUR_MS);
+    // Rollover reopens slots; clear the one-shot completion flag so a permanently
+    // pending channel can retry within the fresh hour instead of staying blocked.
+    if (
+      record.pendingCompletionPassUsed &&
+      before >= maxRestarts &&
+      record.restartsThisHour.length < maxRestarts
+    ) {
+      record.pendingCompletionPassUsed = false;
+    }
   }
 
   async function runCheckWork() {
@@ -167,21 +183,33 @@ export function startChannelHealthMonitor(deps: ChannelHealthMonitorDeps): Chann
             continue;
           }
 
-          pruneOldRestarts(record, now);
-          if (!continuingPendingRestart && record.restartsThisHour.length >= maxRestartsPerHour) {
-            log.warn?.(
-              `[${channelId}:${accountId}] health-monitor: hit ${maxRestartsPerHour} restarts/hour limit, skipping`,
-            );
-            continue;
+          pruneOldRestarts(record, now, maxRestartsPerHour);
+          // Pending continuations still consume the hourly budget so a permanently
+          // stuck restartPending account cannot thrash forever. One extra pass is
+          // allowed at the cap so an already-budgeted recovery can still call
+          // startChannel after stop-timeout left restartPending set (max=1 safe).
+          let grantPendingCompletionPass = false;
+          if (record.restartsThisHour.length >= maxRestartsPerHour) {
+            if (continuingPendingRestart && !record.pendingCompletionPassUsed) {
+              grantPendingCompletionPass = true;
+              record.pendingCompletionPassUsed = true;
+              restartRecords.set(key, record);
+            } else {
+              log.warn?.(
+                `[${channelId}:${accountId}] health-monitor: hit ${maxRestartsPerHour} restarts/hour limit, skipping`,
+              );
+              continue;
+            }
           }
 
           const reason = resolveChannelRestartReason(status, health);
 
           log.info?.(`[${channelId}:${accountId}] health-monitor: restarting (reason: ${reason})`);
 
-          if (!continuingPendingRestart) {
+          if (!grantPendingCompletionPass) {
             record.lastRestartAt = now;
             record.restartsThisHour.push({ at: now });
+            record.pendingCompletionPassUsed = false;
             restartRecords.set(key, record);
           }
 
