@@ -1616,18 +1616,21 @@ class AppSidebar extends OpenClawLightDomContentsElement {
 
   private renameSessionGroupFromMenu(group: string) {
     const context = this.context;
-    if (!context || !this.connected) {
+    const client = context?.gateway.snapshot.client;
+    if (!context || !client || !this.connected || !context.gateway.snapshot.connected) {
       return;
     }
     const next = window.prompt(t("sessionsView.renameGroupPrompt"), group)?.trim();
     if (!next || next === group) {
       return;
     }
-    // Collapse keys follow the confirmed Gateway rename only. Using finally
-    // rewrote local storage even when the RPC rejected and the old group remained.
-    void context.sessions
-      .groupsRename(group, next)
-      .then(() => {
+    // Collapse keys follow the confirmed Gateway rename only and stay scoped
+    // to the connection that issued it; stale completions must not rewrite storage.
+    void context.sessions.groupsRename(group, next).then(
+      () => {
+        if (!this.isCurrentSessionGroupMutation(context, client)) {
+          return;
+        }
         const from = `category:${group}`;
         if (this.collapsedSessionSections.has(from)) {
           const collapsed = new Set(this.collapsedSessionSections);
@@ -1636,34 +1639,42 @@ class AppSidebar extends OpenClawLightDomContentsElement {
           this.saveCollapsedSessionSections(collapsed);
         }
         this.requestUpdate();
-      })
-      .catch(() => {
-        // Session capability / Sessions page surface mutation errors; leave
-        // persisted collapsed state byte-for-byte unchanged on rejection.
-      });
+      },
+      () => undefined,
+    );
   }
 
   private deleteSessionGroupFromMenu(group: string) {
     const context = this.context;
-    if (!context || !this.connected) {
+    const client = context?.gateway.snapshot.client;
+    if (!context || !client || !this.connected || !context.gateway.snapshot.connected) {
       return;
     }
     if (!window.confirm(t("sessionsView.deleteGroupConfirm", { group }))) {
       return;
     }
-    // Same success-only contract as rename: a failed delete must not drop the
-    // group's collapsed preference while the catalog entry still exists.
-    void context.sessions
-      .groupsDelete(group)
-      .then(() => {
+    void context.sessions.groupsDelete(group).then(
+      () => {
+        if (!this.isCurrentSessionGroupMutation(context, client)) {
+          return;
+        }
         const collapsed = new Set(this.collapsedSessionSections);
         collapsed.delete(`category:${group}`);
         this.saveCollapsedSessionSections(collapsed);
         this.requestUpdate();
-      })
-      .catch(() => {
-        // Leave collapsed state alone when the Gateway rejects the delete.
-      });
+      },
+      () => undefined,
+    );
+  }
+
+  private isCurrentSessionGroupMutation(
+    context: ApplicationContext<RouteId>,
+    client: GatewayBrowserClient,
+  ) {
+    const snapshot = context.gateway.snapshot;
+    return (
+      this.context === context && this.connected && snapshot.connected && snapshot.client === client
+    );
   }
 
   private saveCollapsedSessionSections(sections: ReadonlySet<string>) {

@@ -999,12 +999,19 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
     if (!scope) {
       return;
     }
-    const result = await scope.client.request("sessions.groups.rename", { name: from, to });
-    if (!isCurrentConnection(scope)) {
-      return;
+    try {
+      const result = await scope.client.request("sessions.groups.rename", { name: from, to });
+      if (!isCurrentConnection(scope)) {
+        return;
+      }
+      publishGroups(readGroupNames(result));
+      await refresh({ ...lastListOptions, force: true });
+    } catch (error) {
+      if (isCurrentConnection(scope)) {
+        publish({ ...state, error: String(error) });
+      }
+      throw error;
     }
-    publishGroups(readGroupNames(result));
-    await refresh({ ...lastListOptions, force: true });
   };
 
   const groupsDelete = async (name: string) => {
@@ -1012,12 +1019,19 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
     if (!scope) {
       return;
     }
-    const result = await scope.client.request("sessions.groups.delete", { name });
-    if (!isCurrentConnection(scope)) {
-      return;
+    try {
+      const result = await scope.client.request("sessions.groups.delete", { name });
+      if (!isCurrentConnection(scope)) {
+        return;
+      }
+      publishGroups(readGroupNames(result));
+      await refresh({ ...lastListOptions, force: true });
+    } catch (error) {
+      if (isCurrentConnection(scope)) {
+        publish({ ...state, error: String(error) });
+      }
+      throw error;
     }
-    publishGroups(readGroupNames(result));
-    await refresh({ ...lastListOptions, force: true });
   };
 
   const patch = async (

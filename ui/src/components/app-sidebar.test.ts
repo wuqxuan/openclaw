@@ -1992,7 +1992,7 @@ describe("AppSidebar group mutation collapsed state", () => {
     groupsDelete?: () => Promise<void>;
   }) {
     localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(["category:Alpha"]));
-    const gateway = createGateway({} as GatewayBrowserClient);
+    const gatewayHarness = createGatewayHarness({} as GatewayBrowserClient);
     const harness = createSessionsHarness("main", ["agent:main:main"]);
     if (options.groupsRename) {
       harness.groupsRename.mockImplementation(options.groupsRename);
@@ -2000,11 +2000,11 @@ describe("AppSidebar group mutation collapsed state", () => {
     if (options.groupsDelete) {
       harness.groupsDelete.mockImplementation(options.groupsDelete);
     }
-    const { sidebar } = await mountSidebar(gateway, harness.sessions);
+    const { sidebar } = await mountSidebar(gatewayHarness.gateway, harness.sessions);
     sidebar.connected = true;
     harness.publish({ groups: ["Alpha"] });
     await sidebar.updateComplete;
-    return { sidebar, harness };
+    return { sidebar, harness, gatewayHarness };
   }
 
   async function openGroupMenu(sidebar: SidebarLifecycleState) {
@@ -2053,6 +2053,28 @@ describe("AppSidebar group mutation collapsed state", () => {
     expect(JSON.parse(localStorage.getItem(COLLAPSED_STORAGE_KEY) ?? "[]")).toEqual([
       "category:Beta",
     ]);
+    promptSpy.mockRestore();
+  });
+
+  it("ignores a successful group rename after its Gateway disconnects", async () => {
+    let resolveRename!: () => void;
+    const rename = new Promise<void>((resolve) => {
+      resolveRename = resolve;
+    });
+    const { sidebar, harness, gatewayHarness } = await mountCollapsedGroup({
+      groupsRename: () => rename,
+    });
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Beta");
+    const menu = await openGroupMenu(sidebar);
+    menu.querySelectorAll<HTMLButtonElement>(".session-menu__item")[0]?.click();
+    await vi.waitFor(() => expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta"));
+
+    gatewayHarness.publish({ connected: false });
+    resolveRename();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(localStorage.getItem(COLLAPSED_STORAGE_KEY)).toBe(JSON.stringify(["category:Alpha"]));
     promptSpy.mockRestore();
   });
 
