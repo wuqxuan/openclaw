@@ -304,6 +304,9 @@ describe("before_tool_call loop detection behavior", () => {
     expect(details.status).toBe("blocked");
     expect(details.deniedReason).toBe("tool-loop");
     expect(String(details.reason)).toContain(expectedReason);
+    // Critical loop blocks must terminate the agent-core turn batch so the model
+    // cannot keep issuing the same blocked tool after action=block.
+    expect(record.terminate).toBe(true);
   }
 
   async function expectUnblockedToolExecution(

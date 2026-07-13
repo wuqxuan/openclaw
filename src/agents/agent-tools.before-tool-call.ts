@@ -1283,13 +1283,19 @@ export function buildBlockedToolResult(params: {
   runId?: string;
 }) {
   recordPreExecutionBlockedToolCall(params.toolCallId, params.runId);
+  const deniedReason = params.deniedReason ?? "plugin-before-tool-call";
+  // Critical tool-loop vetoes must stop the agent run, not only the next tool
+  // execution. agent-core ends the loop when every finalized result sets
+  // terminate; without it the model keeps calling the blocked tool for hours.
+  const terminateRun = deniedReason === "tool-loop";
   return {
     content: [{ type: "text" as const, text: params.reason }],
     details: {
       status: "blocked",
-      deniedReason: params.deniedReason ?? "plugin-before-tool-call",
+      deniedReason,
       reason: params.reason,
     },
+    ...(terminateRun ? { terminate: true as const } : {}),
   };
 }
 
