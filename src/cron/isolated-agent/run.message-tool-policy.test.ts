@@ -1736,6 +1736,7 @@ describe("runCronIsolatedAgentTurn delivery instruction", () => {
     });
 
     expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+    expectEmbeddedRunFields({ toolsAllow: ["read"] });
     const prompt = expectEmbeddedRunPrompt();
     expect(prompt).not.toContain("Use the message tool");
     expect(prompt).not.toContain("Message delivery destination metadata");
