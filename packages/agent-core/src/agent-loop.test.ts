@@ -1194,6 +1194,62 @@ describe("agentLoop tool termination", () => {
     expect(events.at(-1)).toMatchObject({ type: "agent_end" });
   });
 
+  it("stops after a mixed tool batch when any finalized result terminates", async () => {
+    const executed: string[] = [];
+    let turn = 0;
+    const streamFn: StreamFn = () => {
+      turn += 1;
+      if (turn > 1) {
+        throw new Error("model was called after mixed-batch terminate");
+      }
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const message = makeAssistantMessage([
+          { type: "toolCall", id: "call-success", name: "read", arguments: {} },
+          { type: "toolCall", id: "call-loop", name: "exec", arguments: {} },
+        ]);
+        stream.push({ type: "done", reason: "toolUse", message });
+        stream.end();
+      });
+      return stream;
+    };
+
+    const stream = agentLoop(
+      [{ role: "user", content: "mixed batch", timestamp: 1 }],
+      {
+        systemPrompt: "",
+        messages: [],
+        tools: [makeTool("read", executed), makeTool("exec", executed)],
+      },
+      {
+        ...config,
+        // Critical tool-loop shape: only the blocked result sets terminate; the
+        // sibling success result must not keep the agent loop running.
+        afterToolCall: async ({ toolCall }) =>
+          toolCall.name === "exec"
+            ? {
+                terminate: true,
+                details: {
+                  status: "blocked",
+                  deniedReason: "tool-loop",
+                  reason: "CRITICAL: Called exec with identical arguments 10 times.",
+                },
+              }
+            : undefined,
+      },
+      undefined,
+      streamFn,
+    );
+
+    const events = await collectEvents(stream);
+
+    expect(turn).toBe(1);
+    expect(executed).toEqual(["read", "exec"]);
+    expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ type: "agent_end" });
+  });
+
   it("does not request another model turn after a tool aborts the run", async () => {
     const controller = new AbortController();
     let streamCalls = 0;

@@ -83,7 +83,7 @@ export interface AfterToolCallResult {
   isError?: boolean;
   /**
    * Hint that the agent should stop after the current tool batch.
-   * Early termination only happens when every finalized tool result in the batch sets this to true.
+   * Early termination happens when any finalized tool result in the batch sets this to true.
    */
   terminate?: boolean;
 }
@@ -447,7 +447,7 @@ export interface AgentToolResult<T> {
   progress?: AgentToolProgress;
   /**
    * Hint that the agent should stop after the current tool batch.
-   * Early termination only happens when every finalized tool result in the batch sets this to true.
+   * Early termination happens when any finalized tool result in the batch sets this to true.
    */
   terminate?: boolean;
 }

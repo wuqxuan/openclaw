@@ -805,10 +805,10 @@ type FinalizedToolCallOutcome = {
 type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
 
 function shouldTerminateToolBatch(finalizedCalls: FinalizedToolCallOutcome[]): boolean {
-  return (
-    finalizedCalls.length > 0 &&
-    finalizedCalls.every((finalized) => finalized.result.terminate === true)
-  );
+  // One terminating result ends the run after the current batch. Critical
+  // tool-loop vetoes rely on this so a mixed batch (loop block + success) cannot
+  // request another model turn and resume the runaway loop.
+  return finalizedCalls.some((finalized) => finalized.result.terminate === true);
 }
 
 function prepareToolCallArguments(tool: AgentTool, toolCall: AgentToolCall): AgentToolCall {
