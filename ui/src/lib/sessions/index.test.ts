@@ -160,6 +160,38 @@ describe("createSessionCapability", () => {
     sessions.dispose();
   });
 
+  it("publishes state.error when group rename is rejected", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.groups.rename") {
+        throw new Error("rename failed");
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const { gateway } = createGatewayHarness(client, ["sessions.groups.rename"]);
+    const sessions = createSessionCapability(gateway);
+
+    await expect(sessions.groupsRename("Alpha", "Beta")).rejects.toThrow("rename failed");
+    expect(sessions.state.error).toBe("Error: rename failed");
+    sessions.dispose();
+  });
+
+  it("publishes state.error when group delete is rejected", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.groups.delete") {
+        throw new Error("delete failed");
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const { gateway } = createGatewayHarness(client, ["sessions.groups.delete"]);
+    const sessions = createSessionCapability(gateway);
+
+    await expect(sessions.groupsDelete("Alpha")).rejects.toThrow("delete failed");
+    expect(sessions.state.error).toBe("Error: delete failed");
+    sessions.dispose();
+  });
+
   it("does not probe for a group catalog when the method is explicitly absent", async () => {
     const request = vi.fn();
     const client = { request } as unknown as GatewayBrowserClient;
