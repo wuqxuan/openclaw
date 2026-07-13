@@ -22,4 +22,33 @@ describe("formatUnknownError", () => {
     expect(formatted.length).toBeGreaterThan(0);
     expect(formatted).toContain("Object");
   });
+
+  it("returns a stable literal when String conversion throws", () => {
+    // Reach the String fallback with a circular null-prototype object:
+    // JSON.stringify throws on the cycle, and String() throws without Object.prototype.
+    const nullProto = Object.create(null) as Record<string, unknown>;
+    nullProto.kind = "null-proto-reject";
+    nullProto.self = nullProto;
+    expect(() => JSON.stringify(nullProto)).toThrow();
+    expect(() => String(nullProto)).toThrow();
+    expect(formatUnknownError(nullProto)).toBe("Unknown error");
+
+    // Hostile conversion hooks with a cycle force the same final fallback.
+    const hostile: {
+      self?: unknown;
+      toString: () => string;
+      valueOf: () => number;
+    } = {
+      toString() {
+        throw new Error("toString blocked");
+      },
+      valueOf() {
+        throw new Error("valueOf blocked");
+      },
+    };
+    hostile.self = hostile;
+    expect(() => JSON.stringify(hostile)).toThrow();
+    expect(() => String(hostile)).toThrow();
+    expect(formatUnknownError(hostile)).toBe("Unknown error");
+  });
 });
