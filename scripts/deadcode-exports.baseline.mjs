@@ -1827,6 +1827,7 @@ export const KNIP_UNUSED_EXPORT_BASELINE = [
   "src/agents/auth-profiles/store.ts: testing",
   "src/agents/auth-profiles/usage.ts: testing",
   "src/agents/bash-process-registry.ts: resetProcessRegistryForTests",
+  "src/agents/bash-process-registry.ts: setFinishedSessionRetentionForTests",
   "src/agents/bash-tools.exec-approval-followup-state.ts: resetExecApprovalFollowupRuntimeHandoffsForTests",
   "src/agents/bash-tools.exec-approval-followup.ts: buildExecApprovalFollowupPrompt",
   "src/agents/bash-tools.exec-approval-request.ts: registerExecApprovalRequest",
