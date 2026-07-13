@@ -192,6 +192,34 @@ describe("createSessionCapability", () => {
     sessions.dispose();
   });
 
+  it("reports a group rename as stale after a same-client reconnect", async () => {
+    const renamed = deferred<{ groups: Array<{ name: string }> }>();
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.groups.rename") {
+        return await renamed.promise;
+      }
+      if (method === "sessions.subscribe") {
+        return {};
+      }
+      if (method === "sessions.list") {
+        return sessionsResult([], 2);
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const { gateway, publish } = createGatewayHarness(client, ["sessions.groups.rename"]);
+    const sessions = createSessionCapability(gateway);
+
+    const operation = sessions.groupsRename("Alpha", "Beta");
+    publish(false);
+    publish(true);
+    renamed.resolve({ groups: [{ name: "Beta" }] });
+
+    await expect(operation).resolves.toBe("stale");
+    expect(sessions.state.groups).toEqual([]);
+    sessions.dispose();
+  });
+
   it("does not probe for a group catalog when the method is explicitly absent", async () => {
     const request = vi.fn();
     const client = { request } as unknown as GatewayBrowserClient;

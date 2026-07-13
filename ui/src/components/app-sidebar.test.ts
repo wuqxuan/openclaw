@@ -17,7 +17,11 @@ import {
   type ApplicationGatewaySnapshot,
 } from "../app/context.ts";
 import { CATALOG_SESSION_CONTINUED_EVENT } from "../lib/sessions/catalog-key.ts";
-import type { SessionCapability, SessionState } from "../lib/sessions/index.ts";
+import type {
+  SessionCapability,
+  SessionGroupMutationResult,
+  SessionState,
+} from "../lib/sessions/index.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import "./app-sidebar.ts";
 import {
@@ -140,8 +144,8 @@ function createSessionsHarness(agentId: string, keys: string[]) {
   let canonicalListRevision = 1;
   const listeners = new Set<(next: SessionState) => void>();
   const groupsPut = vi.fn(() => Promise.resolve());
-  const groupsRename = vi.fn(() => Promise.resolve());
-  const groupsDelete = vi.fn(() => Promise.resolve());
+  const groupsRename = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
+  const groupsDelete = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const patch = vi.fn(() => Promise.resolve(null));
   const deleteMany = vi.fn(() =>
     Promise.resolve({ deleted: [] as string[], errors: [], preservedWorktrees: [] }),
@@ -1988,8 +1992,8 @@ describe("AppSidebar group mutation collapsed state", () => {
   const COLLAPSED_STORAGE_KEY = "openclaw:sidebar:sessions:collapsed-sections";
 
   async function mountCollapsedGroup(options: {
-    groupsRename?: () => Promise<void>;
-    groupsDelete?: () => Promise<void>;
+    groupsRename?: () => Promise<SessionGroupMutationResult>;
+    groupsDelete?: () => Promise<SessionGroupMutationResult>;
   }) {
     localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(["category:Alpha"]));
     const gatewayHarness = createGatewayHarness({} as GatewayBrowserClient);
@@ -2041,7 +2045,7 @@ describe("AppSidebar group mutation collapsed state", () => {
 
   it("rewrites collapsed keys only after group rename succeeds", async () => {
     const { sidebar, harness } = await mountCollapsedGroup({
-      groupsRename: () => Promise.resolve(),
+      groupsRename: () => Promise.resolve("completed"),
     });
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Beta");
     const menu = await openGroupMenu(sidebar);
@@ -2056,9 +2060,9 @@ describe("AppSidebar group mutation collapsed state", () => {
     promptSpy.mockRestore();
   });
 
-  it("ignores a successful group rename after its Gateway disconnects", async () => {
-    let resolveRename!: () => void;
-    const rename = new Promise<void>((resolve) => {
+  it("ignores a stale group rename after its Gateway reconnects with the same client", async () => {
+    let resolveRename!: (result: SessionGroupMutationResult) => void;
+    const rename = new Promise<SessionGroupMutationResult>((resolve) => {
       resolveRename = resolve;
     });
     const { sidebar, harness, gatewayHarness } = await mountCollapsedGroup({
@@ -2070,7 +2074,8 @@ describe("AppSidebar group mutation collapsed state", () => {
     await vi.waitFor(() => expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta"));
 
     gatewayHarness.publish({ connected: false });
-    resolveRename();
+    gatewayHarness.publish({ connected: true });
+    resolveRename("stale");
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2096,7 +2101,7 @@ describe("AppSidebar group mutation collapsed state", () => {
 
   it("drops collapsed keys only after group delete succeeds", async () => {
     const { sidebar, harness } = await mountCollapsedGroup({
-      groupsDelete: () => Promise.resolve(),
+      groupsDelete: () => Promise.resolve("completed"),
     });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const menu = await openGroupMenu(sidebar);

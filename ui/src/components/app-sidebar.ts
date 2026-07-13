@@ -1627,8 +1627,8 @@ class AppSidebar extends OpenClawLightDomContentsElement {
     // Collapse keys follow the confirmed Gateway rename only and stay scoped
     // to the connection that issued it; stale completions must not rewrite storage.
     void context.sessions.groupsRename(group, next).then(
-      () => {
-        if (!this.isCurrentSessionGroupMutation(context, client)) {
+      (outcome) => {
+        if (outcome !== "completed" || !this.isCurrentSessionGroupMutation(context, client)) {
           return;
         }
         const from = `category:${group}`;
@@ -1654,8 +1654,8 @@ class AppSidebar extends OpenClawLightDomContentsElement {
       return;
     }
     void context.sessions.groupsDelete(group).then(
-      () => {
-        if (!this.isCurrentSessionGroupMutation(context, client)) {
+      (outcome) => {
+        if (outcome !== "completed" || !this.isCurrentSessionGroupMutation(context, client)) {
           return;
         }
         const collapsed = new Set(this.collapsedSessionSections);
