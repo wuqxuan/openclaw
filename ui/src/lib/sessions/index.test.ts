@@ -220,6 +220,40 @@ describe("createSessionCapability", () => {
     sessions.dispose();
   });
 
+  it.each(["rename", "delete"] as const)(
+    "keeps a confirmed group %s completed when its row refresh outlives the connection",
+    async (operation) => {
+      const refreshed = deferred<SessionsListResult>();
+      const method =
+        operation === "rename" ? "sessions.groups.rename" : "sessions.groups.delete";
+      const request = vi.fn(async (requestedMethod: string) => {
+        if (requestedMethod === method) {
+          return { groups: [{ name: operation === "rename" ? "Beta" : "Other" }] };
+        }
+        if (requestedMethod === "sessions.list") {
+          return await refreshed.promise;
+        }
+        throw new Error(`Unexpected request: ${requestedMethod}`);
+      });
+      const client = { request } as unknown as GatewayBrowserClient;
+      const { gateway, publish } = createGatewayHarness(client, [method]);
+      const sessions = createSessionCapability(gateway);
+
+      const mutation =
+        operation === "rename"
+          ? sessions.groupsRename("Alpha", "Beta")
+          : sessions.groupsDelete("Alpha");
+      await vi.waitFor(() =>
+        expect(request).toHaveBeenCalledWith("sessions.list", expect.any(Object)),
+      );
+      publish(false);
+      refreshed.resolve(sessionsResult([], 2));
+
+      await expect(mutation).resolves.toBe("completed");
+      sessions.dispose();
+    },
+  );
+
   it("does not probe for a group catalog when the method is explicitly absent", async () => {
     const request = vi.fn();
     const client = { request } as unknown as GatewayBrowserClient;

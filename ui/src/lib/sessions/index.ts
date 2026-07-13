@@ -1007,8 +1007,10 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
         return "stale";
       }
       publishGroups(readGroupNames(result));
-      await refresh({ ...lastListOptions, force: true });
-      return isCurrentConnection(scope) ? "completed" : "stale";
+      // The mutation response is the commit point. Reconcile member rows in
+      // the background so a later disconnect cannot downgrade confirmed work.
+      void refresh({ ...lastListOptions, force: true });
+      return "completed";
     } catch (error) {
       if (!isCurrentConnection(scope)) {
         return "stale";
@@ -1029,8 +1031,10 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
         return "stale";
       }
       publishGroups(readGroupNames(result));
-      await refresh({ ...lastListOptions, force: true });
-      return isCurrentConnection(scope) ? "completed" : "stale";
+      // See groupsRename: collapsed-state consumers must observe confirmed
+      // completion before an unrelated refresh can outlive the connection.
+      void refresh({ ...lastListOptions, force: true });
+      return "completed";
     } catch (error) {
       if (!isCurrentConnection(scope)) {
         return "stale";
