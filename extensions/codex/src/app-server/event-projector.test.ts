@@ -274,6 +274,24 @@ function turnWithStatus(status: string, items: unknown[] = []): ProjectorNotific
   } as ProjectorNotification;
 }
 
+function pendingCommandStarted(id: string): ProjectorNotification {
+  return forCurrentTurn("item/started", {
+    item: {
+      type: "commandExecution",
+      id,
+      command: "/bin/bash -lc 'sleep 600'",
+      cwd: "/workspace",
+      processId: null,
+      source: "agent",
+      status: "inProgress",
+      commandActions: [],
+      aggregatedOutput: null,
+      exitCode: null,
+      durationMs: null,
+    },
+  });
+}
+
 describe("CodexAppServerEventProjector", () => {
   it("projects assistant deltas and usage into embedded attempt results", async () => {
     const { onAssistantMessageStart, onPartialReply, projector } =
@@ -1651,32 +1669,11 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.assistantTexts).toEqual([]);
   });
 
-  it("does not promote missing_tool_result to promptError when aborted mid-exec", async () => {
-    const trajectoryRecorder = {
-      filePath: "trajectory.jsonl",
-      recordEvent: vi.fn(),
-      flush: vi.fn(async () => undefined),
-    };
-    const projector = await createProjector(undefined, { trajectoryRecorder });
+  it("keeps missing tool detail without overriding an explicit abort", async () => {
+    const projector = await createProjector();
     projector.markAborted();
 
-    await projector.handleNotification(
-      forCurrentTurn("item/started", {
-        item: {
-          type: "commandExecution",
-          id: "cmd-still-running",
-          command: "pnpm test extensions/codex",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
-          status: "inProgress",
-          commandActions: [],
-          aggregatedOutput: null,
-          exitCode: null,
-          durationMs: null,
-        },
-      }),
-    );
+    await projector.handleNotification(pendingCommandStarted("cmd-aborted"));
     await projector.handleNotification(turnWithStatus("interrupted"));
 
     const result = projector.buildResult(buildEmptyToolTelemetry());
@@ -1684,56 +1681,24 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.aborted).toBe(true);
     expect(result.promptError).toBeNull();
     expect(result.promptErrorSource).toBeNull();
-    expect(result.lastToolError?.error).toContain("without a matching tool.result");
-    expect(trajectoryRecorder.recordEvent).toHaveBeenCalledWith(
-      "tool.result",
-      expect.objectContaining({
-        toolCallId: "cmd-still-running",
-        status: "failed",
-        isError: true,
-        result: { status: "failed", reason: "missing_tool_result" },
-      }),
-    );
+    expect(result.lastToolError).toMatchObject({
+      toolName: "bash",
+      error: expect.stringContaining("without a matching tool.result"),
+    });
   });
 
-  it("does not promote missing_tool_result to promptError for interrupted turns with pending tools", async () => {
+  it("fails closed when interrupted status has no abort marker", async () => {
     const projector = await createProjector();
 
-    await projector.handleNotification(
-      forCurrentTurn("item/started", {
-        item: {
-          type: "commandExecution",
-          id: "cmd-interrupted-pending",
-          command: "/bin/bash -lc 'sleep 600'",
-          cwd: "/workspace",
-          processId: null,
-          source: "agent",
-          status: "inProgress",
-          commandActions: [],
-          aggregatedOutput: null,
-          exitCode: null,
-          durationMs: null,
-        },
-      }),
-    );
-    await projector.handleNotification(
-      turnWithStatus("interrupted", [
-        {
-          type: "agentMessage",
-          id: "msg-partial",
-          text: "still working on the long command",
-        },
-      ]),
-    );
+    await projector.handleNotification(pendingCommandStarted("cmd-interrupted"));
+    await projector.handleNotification(turnWithStatus("interrupted"));
 
     const result = projector.buildResult(buildEmptyToolTelemetry());
 
     expect(result.aborted).toBe(false);
-    expect(result.promptError).toBeNull();
-    expect(result.promptErrorSource).toBeNull();
-    expect(result.assistantTexts).toEqual(["still working on the long command"]);
-    expect(result.lastToolError?.error).toContain("without a matching tool.result");
-    expect(result.lastAssistant?.stopReason).toBe("stop");
+    expect(result.promptError).toContain("without a matching tool.result");
+    expect(result.promptErrorSource).toBe("prompt");
+    expect(result.lastToolError).toBeUndefined();
   });
 
   it("does not fail a completed reply after a retryable app-server error notification", async () => {
