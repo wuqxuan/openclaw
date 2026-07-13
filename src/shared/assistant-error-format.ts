@@ -12,6 +12,11 @@ const HTTP_STATUS_CODE_PREFIX_RE = new RegExp(
   `^(?:http\\s*)?(\\d{3})(?:${HTTP_STATUS_DELIMITER_RE.source}([\\s\\S]+))?$`,
   "i",
 );
+// Built-in provider adapters format status as `OpenAI API error (500): ...` (also
+// Azure OpenAI / Mistral / Provider). Keep this anchored so mid-string numbers
+// like model ids or image dimensions never become fake HTTP statuses.
+const PROVIDER_WRAPPED_HTTP_STATUS_RE =
+  /^(?:[a-z][\w-]*(?:\s+[a-z][\w-]*){0,3}\s+)?api\s*error\s*\((\d{3})\)(?:\s*:\s*([\s\S]*))?$/i;
 const HTML_ERROR_PREFIX_RE = /^\s*(?:<!doctype\s+html\b|<html\b)/i;
 const HTML_CLOSE_RE = /<\/html>/i;
 const CLOUDFLARE_HTML_ERROR_CODES = new Set([521, 522, 523, 524, 525, 526, 530]);
@@ -96,7 +101,7 @@ export function parseApiErrorPayload(raw?: string): ErrorPayload | null {
 }
 
 export function extractLeadingHttpStatus(raw: string): { code: number; rest: string } | null {
-  const match = raw.match(HTTP_STATUS_CODE_PREFIX_RE);
+  const match = raw.match(HTTP_STATUS_CODE_PREFIX_RE) ?? raw.match(PROVIDER_WRAPPED_HTTP_STATUS_RE);
   if (!match) {
     return null;
   }
