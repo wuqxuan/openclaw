@@ -17,7 +17,11 @@ import {
   buildPinnedWritePlan,
 } from "./fs-bridge-mutation-helper.js";
 import { SandboxFsPathGuard } from "./fs-bridge-path-safety.js";
-import { buildStatPlan, type SandboxFsCommandPlan } from "./fs-bridge-shell-command-plans.js";
+import {
+  buildStatPlan,
+  SANDBOX_STAT_MISSING_MARKER,
+  type SandboxFsCommandPlan,
+} from "./fs-bridge-shell-command-plans.js";
 import { parseSandboxStatMtimeMs, parseSandboxStatSize } from "./fs-bridge-stat-parse.js";
 import type { SandboxFsBridge, SandboxFsStat, SandboxResolvedPath } from "./fs-bridge.types.js";
 import {
@@ -206,15 +210,16 @@ class SandboxFsBridgeImpl implements SandboxFsBridge {
       buildStatPlan(target, anchoredTarget),
       params.signal,
     );
+    const text = result.stdout.toString("utf8").trim();
+    // Command plan prints a fixed marker for absent basenames (locale-independent).
+    if (text === SANDBOX_STAT_MISSING_MARKER) {
+      return null;
+    }
     if (result.code !== 0) {
       const stderr = result.stderr.toString("utf8");
-      if (stderr.includes("No such file or directory")) {
-        return null;
-      }
       const message = stderr.trim() || `stat failed with code ${result.code}`;
       throw new Error(`stat failed for ${target.containerPath}: ${message}`);
     }
-    const text = result.stdout.toString("utf8").trim();
     const [typeRaw, sizeRaw, mtimeRaw] = text.split("|");
     return {
       type: coerceStatType(typeRaw),

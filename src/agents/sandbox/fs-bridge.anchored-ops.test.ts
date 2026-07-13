@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { SANDBOX_STAT_MISSING_MARKER } from "./fs-bridge-shell-command-plans.js";
 import {
   createSandbox,
   createSandboxFsBridge,
@@ -220,6 +221,75 @@ describe("sandbox fs bridge anchored ops", () => {
       expect(getDockerArg(args, 1)).toBe("/workspace/nested");
       expect(getDockerArg(args, 2)).toBe("file.txt");
       expect(args).not.toContain("/workspace/nested/file.txt");
+      const script = getDockerScript(args);
+      expect(script).toContain(`[ ! -e "$2" ]`);
+      expect(script).toContain(SANDBOX_STAT_MISSING_MARKER);
+    });
+  });
+
+  it("returns null for missing paths via locale-independent marker (not English stderr)", async () => {
+    await withTempDir("openclaw-fs-bridge-stat-missing-", async (stateDir) => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      await fs.mkdir(workspaceDir, { recursive: true });
+
+      mockedExecDockerRaw.mockImplementation(async (args) => {
+        const script = getDockerScript(args);
+        if (script.includes('readlink -f -- "$cursor"')) {
+          return dockerExecResult(`${getDockerArg(args, 1)}\n`);
+        }
+        if (script.includes(SANDBOX_STAT_MISSING_MARKER) || script.includes('stat -c "%F|%s|%y"')) {
+          // Simulate plan output for absent basename: marker on stdout, exit 0.
+          // Localized stderr must not be required for missing-file handling.
+          return {
+            ...dockerExecResult(`${SANDBOX_STAT_MISSING_MARKER}\n`),
+            stderr: Buffer.from(
+              "stat: impossible d'appliquer stat à 'note.txt': Aucun fichier ou dossier de ce type\n",
+            ),
+            code: 0,
+          };
+        }
+        return dockerExecResult("");
+      });
+
+      const bridge = createSandboxFsBridge({
+        sandbox: createSandbox({
+          workspaceDir,
+          agentWorkspaceDir: workspaceDir,
+        }),
+      });
+
+      await expect(bridge.stat({ filePath: "note.txt" })).resolves.toBeNull();
+    });
+  });
+
+  it("still throws on non-missing stat failures (permission / other stderr)", async () => {
+    await withTempDir("openclaw-fs-bridge-stat-perm-", async (stateDir) => {
+      const workspaceDir = path.join(stateDir, "workspace");
+      await fs.mkdir(workspaceDir, { recursive: true });
+
+      mockedExecDockerRaw.mockImplementation(async (args) => {
+        const script = getDockerScript(args);
+        if (script.includes('readlink -f -- "$cursor"')) {
+          return dockerExecResult(`${getDockerArg(args, 1)}\n`);
+        }
+        if (script.includes('stat -c "%F|%s|%y"')) {
+          return {
+            ...dockerExecResult(""),
+            stderr: Buffer.from("stat: permission denied\n"),
+            code: 1,
+          };
+        }
+        return dockerExecResult("");
+      });
+
+      const bridge = createSandboxFsBridge({
+        sandbox: createSandbox({
+          workspaceDir,
+          agentWorkspaceDir: workspaceDir,
+        }),
+      });
+
+      await expect(bridge.stat({ filePath: "secret.txt" })).rejects.toThrow(/permission denied/i);
     });
   });
 
