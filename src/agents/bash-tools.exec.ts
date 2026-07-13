@@ -12,6 +12,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { normalizeChatChannelId } from "../channels/ids.js";
+import { createAbortError } from "../infra/abort-signal.js";
 import {
   type ExecAsk,
   type ExecHost,
@@ -2023,6 +2024,10 @@ export function createExecTool(
       let yielded = false;
       let yieldTimer: NodeJS.Timeout | null = null;
       let registeredAbortSignal: AbortSignal | null = null;
+      // Caller AbortSignal for a foreground tool turn. Set only when we kill the
+      // owned process; after run.promise settles we reject instead of fulfilling
+      // a failed/exit payload as a normal tool result (#105681).
+      let toolAborted = false;
 
       // Tool-call abort should not kill backgrounded sessions; timeouts still must.
       const onAbortSignal = () => {
@@ -2036,6 +2041,13 @@ export function createExecTool(
         run.disableUpdates();
         if (yielded || run.session.backgrounded) {
           return;
+        }
+        toolAborted = true;
+        // Disarm the yield timer before kill so it cannot resolve "running" after
+        // the process is killed but before the finalized exit promise settles.
+        if (yieldTimer) {
+          clearTimeout(yieldTimer);
+          yieldTimer = null;
         }
         run.kill();
       };
@@ -2108,6 +2120,23 @@ export function createExecTool(
         run.promise
           .then((outcome) => {
             cleanupToolRunListeners();
+            // Reject only after the killed process/session finalization settles so
+            // sandbox/session cleanup is not raced by an early abort rejection.
+            if (toolAborted) {
+              const reason = signal?.reason;
+              if (reason instanceof Error) {
+                reject(reason);
+                return;
+              }
+              reject(
+                createAbortError(
+                  typeof reason === "string" && reason.length > 0
+                    ? reason
+                    : "Tool execution was aborted",
+                ),
+              );
+              return;
+            }
             if (yielded || run.session.backgrounded) {
               return;
             }
@@ -2122,6 +2151,22 @@ export function createExecTool(
           .catch((err: unknown) => {
             cleanupToolRunListeners();
             if (yielded || run.session.backgrounded) {
+              return;
+            }
+            if (toolAborted) {
+              const reason = signal?.reason;
+              if (reason instanceof Error) {
+                reject(reason);
+                return;
+              }
+              reject(
+                createAbortError(
+                  typeof reason === "string" && reason.length > 0
+                    ? reason
+                    : "Tool execution was aborted",
+                  { cause: err },
+                ),
+              );
               return;
             }
             reject(err as Error);

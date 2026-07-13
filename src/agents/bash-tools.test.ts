@@ -1082,11 +1082,39 @@ describe("exec backgrounded onUpdate suppression", () => {
         shortDelayCmd,
         shellEcho("after-abort"),
       ]);
-      await execTool.execute(nextCallId(), { command }, abortController.signal, onUpdateSpy);
+      await expect(
+        execTool.execute(nextCallId(), { command }, abortController.signal, onUpdateSpy),
+      ).rejects.toMatchObject({ name: "AbortError" });
       expect(onUpdateSpy).toHaveBeenCalledTimes(1);
       // Allow a tick for any straggling stdout data events.
       await waitOneTurn();
       // After abort, no new onUpdate calls should have been made.
+      expect(onUpdateSpy).toHaveBeenCalledTimes(1);
+    },
+    isWin ? 10_000 : 5_000,
+  );
+
+  it(
+    "rejects with AbortError when abort fires before yield window expires",
+    async () => {
+      const abortController = new AbortController();
+      // Abort during the first onUpdate while a long yield window is still armed.
+      // The fix must clear the yield timer and reject after process finalization
+      // instead of resolving a "running" or failed foreground payload.
+      const onUpdateSpy = vi.fn(() => abortController.abort());
+      const command = joinCommands([
+        shellEcho("before-abort"),
+        shortDelayCmd,
+        shellEcho("after-abort"),
+      ]);
+      await expect(
+        execTool.execute(
+          nextCallId(),
+          { command, yieldMs: 60_000 },
+          abortController.signal,
+          onUpdateSpy,
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
       expect(onUpdateSpy).toHaveBeenCalledTimes(1);
     },
     isWin ? 10_000 : 5_000,
