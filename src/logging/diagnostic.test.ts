@@ -10,6 +10,7 @@ import {
   type DiagnosticEventPayload,
 } from "../infra/diagnostic-events.js";
 import { withDiagnosticPhase } from "./diagnostic-phase.js";
+import { resolveDiagnosticRecoverySkipHeartbeatDelayMs } from "./diagnostic-recovery-skip-delay.js";
 import {
   getDiagnosticSessionActivitySnapshot,
   markDiagnosticEmbeddedRunEnded,
@@ -452,6 +453,44 @@ describe("stuck session diagnostics threshold", () => {
       { sessionId: "s1", sessionKey: "main", queueDepth: 0 },
       ["ageMs", "stateGeneration"],
     );
+  });
+
+  it("scales recovery deferral with a low stuckSessionAbortMs below the fixed 90s skip", () => {
+    const recoverStuckSession = vi.fn();
+    const warnSpy = vi.spyOn(diagnosticLogger, "warn").mockImplementation(() => undefined);
+    const stuckSessionWarnMs = 20_000;
+    const stuckSessionAbortMs = 45_000;
+    // Delay sits between the abort threshold and the historical 90s fixed skip.
+    const observerDelayMs = 60_000;
+    expect(resolveDiagnosticRecoverySkipHeartbeatDelayMs(stuckSessionAbortMs)).toBe(
+      stuckSessionAbortMs,
+    );
+    expect(observerDelayMs).toBeLessThan(90_000);
+    expect(observerDelayMs).toBeGreaterThan(stuckSessionAbortMs);
+
+    vi.setSystemTime(0);
+    startDiagnosticHeartbeat(
+      {
+        diagnostics: {
+          enabled: true,
+          stuckSessionWarnMs,
+          stuckSessionAbortMs,
+        },
+      },
+      { recoverStuckSession },
+    );
+    logSessionStateChange({ sessionId: "s1", sessionKey: "main", state: "processing" });
+
+    vi.setSystemTime(observerDelayMs + 1);
+    vi.advanceTimersByTime(30_000);
+
+    expectLoggerMessageContaining(warnSpy, "liveness heartbeat delayed");
+    expect(recoverStuckSession).not.toHaveBeenCalled();
+
+    // Next on-time tick may recover once ages are observed without observer drift.
+    vi.advanceTimersByTime(30_000);
+
+    expect(recoverStuckSession).toHaveBeenCalled();
   });
 
   it("does not warn while a processing session continues reporting progress", () => {

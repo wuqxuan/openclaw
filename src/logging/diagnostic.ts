@@ -18,6 +18,7 @@ import {
   getRecentDiagnosticPhases,
   resetDiagnosticPhasesForTest,
 } from "./diagnostic-phase.js";
+import { resolveDiagnosticRecoverySkipHeartbeatDelayMs } from "./diagnostic-recovery-skip-delay.js";
 import {
   BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   getDiagnosticSessionActivitySnapshot,
@@ -88,8 +89,6 @@ const DEFAULT_LIVENESS_EVENT_LOOP_DELAY_WARN_MS = 1_000;
 const DEFAULT_LIVENESS_EVENT_LOOP_UTILIZATION_WARN = 0.95;
 const DEFAULT_LIVENESS_CPU_CORE_RATIO_WARN = 0.9;
 const DEFAULT_LIVENESS_WARN_COOLDOWN_MS = 120_000;
-const DIAGNOSTIC_HEARTBEAT_INTERVAL_MS = 30_000;
-const DIAGNOSTIC_HEARTBEAT_DELAY_RECOVERY_SKIP_MS = 3 * DIAGNOSTIC_HEARTBEAT_INTERVAL_MS;
 const loadStuckSessionRecoveryRuntime = createLazyRuntimeModule(
   () => import("./diagnostic-stuck-session-recovery.runtime.js"),
 );
@@ -1240,9 +1239,9 @@ export function startDiagnosticHeartbeat(
     const tickDelayMs =
       lastDiagnosticHeartbeatTickAt === undefined ? 0 : now - lastDiagnosticHeartbeatTickAt;
     lastDiagnosticHeartbeatTickAt = now;
-    // A late interval tick means the process was stalled, not the sessions.
-    // Acting on inflated ages here can abort healthy runs; the next on-time tick decides.
-    const skipRecoveryThisTick = tickDelayMs > DIAGNOSTIC_HEARTBEAT_DELAY_RECOVERY_SKIP_MS;
+    // Late ticks inflate ages; skip when delay > min(90s cap, abort threshold).
+    const skipRecoveryThisTick =
+      tickDelayMs > resolveDiagnosticRecoverySkipHeartbeatDelayMs(stuckSessionAbortMs);
     if (skipRecoveryThisTick) {
       diag.warn(
         `liveness heartbeat delayed ${Math.round(tickDelayMs)}ms; deferring recovery decisions`,
@@ -1373,7 +1372,7 @@ export function startDiagnosticHeartbeat(
         }
       }
     }
-  }, DIAGNOSTIC_HEARTBEAT_INTERVAL_MS);
+  }, 30_000);
   heartbeatInterval.unref?.();
 }
 
