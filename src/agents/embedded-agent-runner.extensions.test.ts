@@ -33,6 +33,77 @@ afterEach(() => {
 });
 
 describe("buildEmbeddedExtensionFactories", () => {
+  it("forwards prepared agent/session/run identity into tool-result middleware", async () => {
+    // OpenClaw path must match Codex: middleware ctx carries prepared run identity
+    // so plugins can attribute/scope events without request-time rediscovery (#106910).
+    const seenContexts: Array<{
+      runtime?: string;
+      agentId?: string;
+      sessionId?: string;
+      sessionKey?: string;
+      runId?: string;
+    }> = [];
+    const registry = createEmptyPluginRegistry();
+    registry.agentToolResultMiddlewares.push({
+      pluginId: "identity-probe",
+      pluginName: "identity-probe",
+      rawHandler: () => undefined,
+      handler: (_event, ctx) => {
+        seenContexts.push({
+          runtime: ctx.runtime,
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          sessionKey: ctx.sessionKey,
+          runId: ctx.runId,
+        });
+        return undefined;
+      },
+      runtimes: ["openclaw"],
+      source: "test",
+    });
+    setActivePluginRegistry(registry);
+
+    const factories = buildEmbeddedExtensionFactories({
+      cfg: undefined,
+      sessionManager: SessionManager.inMemory(),
+      provider: "openai",
+      modelId: "gpt-5.4",
+      model: undefined,
+      agentId: "agent-main",
+      sessionId: "session-abc",
+      sessionKey: "agent:main:main",
+      runId: "run-middleware-identity",
+    });
+    expect(factories).toHaveLength(1);
+
+    const handlers = new Map<string, Function>();
+    await factories[0]?.({
+      on(event: string, handler: Function) {
+        handlers.set(event, handler);
+      },
+    } as never);
+
+    await handlers.get("tool_result")?.(
+      {
+        toolName: "exec",
+        toolCallId: "call-identity",
+        content: [{ type: "text", text: "ok" }],
+        details: {},
+      },
+      { cwd: "/tmp" },
+    );
+
+    expect(seenContexts).toEqual([
+      {
+        runtime: "openclaw",
+        agentId: "agent-main",
+        sessionId: "session-abc",
+        sessionKey: "agent:main:main",
+        runId: "run-middleware-identity",
+      },
+    ]);
+  });
+
   it("bridges middleware mutations with unique fallback tool call ids", async () => {
     // Middleware invoked from app-server style tool_result events may not have a
     // call id; synthesize stable unique ids for downstream audit/mutation hooks.

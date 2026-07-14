@@ -76,12 +76,16 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
   applyAgentAutoCompactionGuard(autoCompactionGuardArgs);
 
   // These factories carry compaction/pruning runtime state into the resource loader.
+  // Forward prepared agent/session/run identity into tool-result middleware (no rediscovery).
   const extensionFactories = buildEmbeddedExtensionFactories({
     cfg: attempt.config,
     sessionManager: input.sessionManager,
     provider: attempt.provider,
     modelId: attempt.modelId,
     model: attempt.model,
+    agentId: attempt.agentId ?? input.sessionAgentId,
+    sessionId: attempt.sessionId,
+    sessionKey: attempt.sessionKey,
     runId: attempt.runId,
   });
   const resourceLoader = createEmbeddedAgentResourceLoader({

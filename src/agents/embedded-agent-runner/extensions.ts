@@ -3,6 +3,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { AgentToolResultMiddlewareContext } from "../../plugins/agent-tool-result-middleware-types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { normalizeAcceptedSessionSpawnResult } from "../accepted-session-spawn.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
@@ -37,6 +38,12 @@ type AgentToolResultEvent = {
   isError?: boolean;
 };
 
+/** Prepared run identity forwarded into tool-result middleware (no request-time rediscovery). */
+type EmbeddedToolResultMiddlewareIdentity = Pick<
+  AgentToolResultMiddlewareContext,
+  "agentId" | "sessionId" | "sessionKey" | "runId"
+>;
+
 function recordFromUnknown(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -52,9 +59,15 @@ function snapshotToolSendReceipt(details: unknown): unknown {
 
 function buildAgentToolResultMiddlewareFactory(
   sessionManager: SessionManager,
-  runId?: string,
+  identity: EmbeddedToolResultMiddlewareIdentity = {},
 ): ExtensionFactory {
-  const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" });
+  // Match Codex: construct the runner with prepared agent/session/run identity so
+  // middleware can attribute OpenClaw events without probing session state per tool.
+  const runner = createAgentToolResultMiddlewareRunner({
+    runtime: "openclaw",
+    ...identity,
+  });
+  const runId = identity.runId;
   return (agent) => {
     agent.on("tool_result", async (rawEvent: unknown, ctx: { cwd?: string }) => {
       const event = recordFromUnknown(rawEvent) as AgentToolResultEvent;
@@ -178,6 +191,10 @@ export function buildEmbeddedExtensionFactories(params: {
   provider: string;
   modelId: string;
   model: ProviderRuntimeModel | undefined;
+  /** Prepared run identity for AgentToolResultMiddlewareContext (optional fields). */
+  agentId?: string;
+  sessionId?: string;
+  sessionKey?: string;
   runId?: string;
 }): ExtensionFactory[] {
   const factories: ExtensionFactory[] = [];
@@ -212,6 +229,13 @@ export function buildEmbeddedExtensionFactories(params: {
   if (pruningFactory) {
     factories.push(pruningFactory);
   }
-  factories.push(buildAgentToolResultMiddlewareFactory(params.sessionManager, params.runId));
+  factories.push(
+    buildAgentToolResultMiddlewareFactory(params.sessionManager, {
+      agentId: params.agentId,
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      runId: params.runId,
+    }),
+  );
   return factories;
 }
