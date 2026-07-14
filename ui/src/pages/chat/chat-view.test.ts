@@ -5390,6 +5390,69 @@ describe("right-click Reply", () => {
     expect(document.querySelector(".chat-reply-context-menu")).toBeNull();
   });
 
+  it("keeps the native context menu when message text is selected", () => {
+    const onSetReply = vi.fn();
+    const container = renderChatView({ onSetReply });
+    // Selection APIs only retain ranges for connected document nodes (jsdom).
+    document.body.appendChild(container);
+    const section = container.querySelector<HTMLElement>(".card.chat");
+    expect(section).not.toBeNull();
+
+    const group = document.createElement("div");
+    group.className = "chat-group";
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+    bubble.dataset.messageText = "copy me please";
+    const textNode = document.createTextNode("copy me please");
+    bubble.appendChild(textNode);
+    group.appendChild(bubble);
+    section!.querySelector(".chat-thread-inner")!.appendChild(group);
+
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 7);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    expect(selection?.isCollapsed).toBe(false);
+
+    const evt = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    bubble.dispatchEvent(evt);
+
+    expect(evt.defaultPrevented).toBe(false);
+    expect(document.querySelector(".chat-reply-context-menu")).toBeNull();
+    expect(onSetReply).not.toHaveBeenCalled();
+
+    selection?.removeAllRanges();
+    container.remove();
+  });
+
+  it("still opens Reply menu when selection is collapsed", () => {
+    const onSetReply = vi.fn();
+    const container = renderChatView({ onSetReply });
+    document.body.appendChild(container);
+    const section = container.querySelector<HTMLElement>(".card.chat");
+    const group = document.createElement("div");
+    group.className = "chat-group";
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+    bubble.dataset.messageText = "reply without selection";
+    const textNode = document.createTextNode("reply without selection");
+    bubble.appendChild(textNode);
+    group.appendChild(bubble);
+    section!.querySelector(".chat-thread-inner")!.appendChild(group);
+
+    window.getSelection()?.removeAllRanges();
+
+    const evt = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    bubble.dispatchEvent(evt);
+
+    expect(evt.defaultPrevented).toBe(true);
+    expect(document.querySelector(".chat-reply-context-menu")).not.toBeNull();
+    document.querySelector(".chat-reply-context-menu")?.remove();
+    container.remove();
+  });
+
   it("dismisses the reply context menu with Escape after delayed listeners register", () => {
     const onSetReply = vi.fn();
     const frameCallbacks: FrameRequestCallback[] = [];

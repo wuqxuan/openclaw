@@ -597,6 +597,43 @@ function handleChatThreadSelectionPointerUp(event: PointerEvent, props: ChatThre
   });
 }
 
+/**
+ * True when the user has a non-collapsed selection that intersects this
+ * message bubble. In that case the custom Reply menu must not call
+ * preventDefault — otherwise native Copy/Search/accessibility menus are lost.
+ */
+function hasNonCollapsedSelectionInBubble(bubble: Element): boolean {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false;
+  }
+  // Prefer anchor/focus containment: reliable in jsdom and real browsers when
+  // the selection lives inside the bubble text nodes.
+  if (
+    [selection.anchorNode, selection.focusNode].some(
+      (node) => node !== null && bubble.contains(node),
+    )
+  ) {
+    return Boolean(selection.toString().trim());
+  }
+  try {
+    if (selection.getRangeAt(0).intersectsNode(bubble)) {
+      return Boolean(selection.toString().trim());
+    }
+  } catch {
+    // Range.intersectsNode can throw if the node is not in the live tree.
+  }
+  // Fallback: common ancestor inside this bubble.
+  const container = selection.getRangeAt(0).commonAncestorContainer;
+  const element = container instanceof Element ? container : container.parentElement;
+  const selectedBubble = element?.closest(".chat-bubble");
+  return (
+    selectedBubble != null &&
+    (selectedBubble === bubble || bubble.contains(selectedBubble)) &&
+    Boolean(selection.toString().trim())
+  );
+}
+
 function handleChatContextMenu(event: MouseEvent, props: ChatThreadProps) {
   const bubble = (event.target as HTMLElement).closest(".chat-bubble");
   if (!bubble || typeof props.onSetReply !== "function") {
@@ -610,6 +647,11 @@ function handleChatContextMenu(event: MouseEvent, props: ChatThreadProps) {
     group.querySelector(".chat-reading-indicator") ||
     group.querySelector(".chat-bubble.streaming")
   ) {
+    return;
+  }
+  // Preserve native browser context menu (Copy, Search, spell-check) when the
+  // user has selected message text. Custom Reply remains for empty selection.
+  if (hasNonCollapsedSelectionInBubble(bubble)) {
     return;
   }
   const senderEl = group.querySelector(".chat-sender-name");
