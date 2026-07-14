@@ -198,6 +198,7 @@ const acpRuntimeMocks = vi.hoisted(() => ({
 const acpManagerMocks = vi.hoisted(() => ({
   cancelSession: vi.fn(async () => {}),
   closeSession: vi.fn(async () => {}),
+  forceDiscardSession: vi.fn(async () => {}),
 }));
 const browserSessionTabMocks = vi.hoisted(() => ({
   closeTrackedBrowserTabsForSessions: vi.fn(async () => 0),
@@ -313,6 +314,7 @@ vi.mock("../../acp/control-plane/manager.js", () => ({
   getAcpSessionManager: () => ({
     cancelSession: acpManagerMocks.cancelSession,
     closeSession: acpManagerMocks.closeSession,
+    forceDiscardSession: acpManagerMocks.forceDiscardSession,
   }),
 }));
 
@@ -379,6 +381,7 @@ export function setupGatewaySessionsTestHarness() {
     );
     acpManagerMocks.cancelSession.mockClear();
     acpManagerMocks.closeSession.mockClear();
+    acpManagerMocks.forceDiscardSession.mockClear();
     browserSessionTabMocks.closeTrackedBrowserTabsForSessions.mockClear();
     browserSessionTabMocks.closeTrackedBrowserTabsForSessions.mockResolvedValue(0);
     bundleMcpRuntimeMocks.disposeSessionMcpRuntime.mockClear();

@@ -1,5 +1,5 @@
 /** Tests ACP runtime handle caching, reuse, re-ensure, and eviction behavior. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AcpRuntimeError,
   AcpSessionManager,
@@ -104,6 +104,73 @@ describe("AcpSessionManager runtime handles", () => {
     expectRecordFields(mockCallArg(runtimeState.close), {
       reason: "runtime-handle-replaced",
     });
+  });
+
+  it("force-discards a cached runtime handle without waiting on the session actor", async () => {
+    const runtimeState = createRuntime();
+    let resolveCancel: (() => void) | undefined;
+    runtimeState.cancel.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+    hoisted.readAcpSessionEntryMock.mockReturnValue({
+      sessionKey: "agent:codex:acp:session-1",
+      storeSessionKey: "agent:codex:acp:session-1",
+      acp: readySessionMeta(),
+    });
+
+    const manager = new AcpSessionManager();
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "first",
+      mode: "prompt",
+      requestId: "r1",
+    });
+
+    // Simulate a cancel that still owns the session actor while force-discard
+    // must still evict the cached handle so the next turn cannot reuse it.
+    const stuckCancel = manager.cancelSession({
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      reason: "session-reset",
+    });
+    await vi.waitFor(() => {
+      expect(runtimeState.cancel).toHaveBeenCalled();
+    });
+
+    await manager.forceDiscardSession({
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      reason: "session-reset",
+    });
+    // Handle eviction happens off the session actor so a timed-out cancel that
+    // still owns the queue cannot keep the stale runtime reusable.
+    expect(runtimeState.close).toHaveBeenCalled();
+    expectRecordFields(mockCallArg(runtimeState.close), {
+      reason: "session-reset",
+    });
+
+    resolveCancel?.();
+    await stuckCancel;
+
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "after-discard",
+      mode: "prompt",
+      requestId: "r2",
+    });
+    expect(runtimeState.ensureSession).toHaveBeenCalledTimes(2);
+    expect(runtimeState.runTurn).toHaveBeenCalledTimes(2);
   });
 
   it("re-ensures cached runtime handles when the backend reports the session is dead", async () => {

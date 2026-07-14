@@ -364,6 +364,47 @@ export class AcpSessionManager {
     );
   }
 
+  /**
+   * Evict a runtime handle after bounded cancel/close failure without waiting on
+   * the session actor. Timed-out cancel still owns the actor, so a normal close
+   * would queue behind it and leave the stale handle reusable — force-discard
+   * clears the cache (and best-effort closes the runtime) off-queue so /reset
+   * can recover.
+   */
+  async forceDiscardSession(params: {
+    cfg: OpenClawConfig;
+    sessionKey: string;
+    reason?: string;
+  }): Promise<void> {
+    const sessionKey = canonicalizeAcpSessionKey(params);
+    if (!sessionKey) {
+      throw new AcpRuntimeError("ACP_SESSION_INIT_FAILED", "ACP session key is required.");
+    }
+    const discardReason = params.reason ?? "force-discard";
+    const actorKey = normalizeActorKey(sessionKey);
+    const activeTurn = this.activeTurnBySession.get(actorKey);
+    if (activeTurn) {
+      activeTurn.abortController.abort();
+      // Drop bookkeeping immediately so the next turn cannot observe a stale
+      // active-turn entry while the best-effort cancel may still hang.
+      this.activeTurnBySession.delete(actorKey);
+      void activeTurn.runtime
+        .cancel({
+          handle: activeTurn.handle,
+          reason: discardReason,
+        })
+        .catch((error) => {
+          logVerbose(
+            `acp-manager: force-discard cancel failed for ${sessionKey}: ${String(error)}`,
+          );
+        });
+    }
+    await this.runtimeHandles.close({
+      sessionKey,
+      reason: discardReason,
+    });
+  }
+
   private async ensureRuntimeHandle(params: {
     cfg: OpenClawConfig;
     sessionKey: string;
