@@ -557,12 +557,15 @@ export class CodexAppServerEventProjector {
 
   private handleTokenUsage(params: JsonObject): void {
     // v2 ThreadTokenUsageUpdatedNotification: tokenUsage = {total, last, modelContextWindow}.
+    // Prefer absolute cumulative thread `total` for attemptUsage so session
+    // persistence can mark totalTokensFresh from the protocol snapshot.
+    // Per-call `last` alone is not the thread context total and leaves /status
+    // oscillating to ? after ordinary turns (#107324). Fall back to `last`
+    // only when `total` is absent.
     const tokenUsage = isJsonObject(params.tokenUsage) ? params.tokenUsage : undefined;
+    const total = tokenUsage && isJsonObject(tokenUsage.total) ? tokenUsage.total : undefined;
     const last = tokenUsage && isJsonObject(tokenUsage.last) ? tokenUsage.last : undefined;
-    if (!last) {
-      return;
-    }
-    const usage = normalizeCodexTokenUsage(last);
+    const usage = normalizeCodexTokenUsage(total ?? last);
     if (usage) {
       this.tokenUsage = usage;
     }

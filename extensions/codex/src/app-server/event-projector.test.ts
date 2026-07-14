@@ -337,12 +337,19 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.messagesSnapshot.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(result.lastAssistant?.content).toEqual([{ type: "text", text: "hello" }]);
     expect(result.currentAttemptAssistant?.content).toEqual([{ type: "text", text: "hello" }]);
-    expectUsageFields(result.attemptUsage, { input: 3, output: 7, cacheRead: 2, total: 12 });
+    // Absolute cumulative thread total (not per-call last) drives attemptUsage
+    // so session totalTokensFresh can stay true after ordinary Codex turns.
+    expectUsageFields(result.attemptUsage, {
+      input: 600_000,
+      output: 100_000,
+      cacheRead: 100_000,
+      total: 900_000,
+    });
     expectUsageFields(result.lastAssistant?.usage, {
-      input: 3,
-      output: 7,
-      cacheRead: 2,
-      total: 12,
+      input: 600_000,
+      output: 100_000,
+      cacheRead: 100_000,
+      total: 900_000,
     });
     expect(result.replayMetadata.replaySafe).toBe(true);
   });
@@ -596,7 +603,7 @@ describe("CodexAppServerEventProjector", () => {
     });
   });
 
-  it("does not treat cumulative-only token usage as fresh context usage", async () => {
+  it("projects absolute cumulative thread token usage when last is absent", async () => {
     const projector = await createProjector();
 
     await projector.handleNotification(agentMessageDelta("done"));
@@ -616,13 +623,41 @@ describe("CodexAppServerEventProjector", () => {
     const result = projector.buildResult(buildEmptyToolTelemetry());
 
     expect(result.assistantTexts).toEqual(["done"]);
-    expect(result.attemptUsage).toBeUndefined();
-    expectUsageFields(result.lastAssistant?.usage, {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      total: 0,
+    // inputTokens includes cached; normalizeCodexTokenUsage uncached = 999000-500.
+    expectUsageFields(result.attemptUsage, {
+      input: 998_500,
+      output: 500,
+      cacheRead: 500,
+      total: 1_000_000,
     });
+    expectUsageFields(result.lastAssistant?.usage, {
+      input: 998_500,
+      output: 500,
+      cacheRead: 500,
+      total: 1_000_000,
+    });
+  });
+
+  it("falls back to per-call last when absolute total is absent", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(agentMessageDelta("done"));
+    await projector.handleNotification(
+      forCurrentTurn("thread/tokenUsage/updated", {
+        tokenUsage: {
+          last: {
+            totalTokens: 12,
+            inputTokens: 5,
+            cachedInputTokens: 2,
+            outputTokens: 7,
+          },
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expectUsageFields(result.attemptUsage, { input: 3, output: 7, cacheRead: 2, total: 12 });
   });
 
   it("uses raw assistant response items when turn completion omits items", async () => {
