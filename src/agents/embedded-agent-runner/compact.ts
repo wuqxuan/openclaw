@@ -1427,12 +1427,18 @@ async function compactEmbeddedAgentSessionDirectOnce(
       });
       // Sets compaction/pruning runtime state and returns extension factories
       // that must be passed to the resource loader for the safeguard to be active.
+      // Forward the same prepared agent/session/run identity as live attempts so
+      // tool-result middleware stays attributable if compaction tools emit results.
       const extensionFactories = buildEmbeddedExtensionFactories({
         cfg: params.config,
         sessionManager,
         provider,
         modelId,
         model: effectiveModel,
+        agentId: sessionAgentId,
+        sessionId: params.sessionId,
+        sessionKey: sandboxSessionKey,
+        runId,
       });
       const resourceLoader = createEmbeddedAgentResourceLoader({
         cwd: effectiveCwd,

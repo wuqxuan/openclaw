@@ -14,6 +14,8 @@ import {
   SessionManager,
 } from "openclaw/plugin-sdk/agent-sessions";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { listAgentToolResultMiddlewares } from "../plugins/agent-tool-result-middleware.js";
+import { loadOpenClawPlugins } from "../plugins/loader.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import {
@@ -22,14 +24,23 @@ import {
 } from "./agent-tools.before-tool-call.js";
 import { buildEmbeddedExtensionFactories } from "./embedded-agent-runner/extensions.js";
 import { consumeEmbeddedToolSendReceipt } from "./embedded-agent-runner/tool-send-receipts.js";
-import { cleanupTempPluginTestEnvironment } from "./test-helpers/temp-plugin-extension-fixtures.js";
+import {
+  cleanupTempPluginTestEnvironment,
+  createTempPluginDir,
+  writeTempPlugin,
+} from "./test-helpers/temp-plugin-extension-fixtures.js";
 import { jsonResult } from "./tools/common.js";
 
 const originalBundledPluginsDir = process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
+const originalDisableBundledPlugins = process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS;
 const tempDirs: string[] = [];
 
 afterEach(() => {
-  cleanupTempPluginTestEnvironment(tempDirs, originalBundledPluginsDir);
+  cleanupTempPluginTestEnvironment(
+    tempDirs,
+    originalBundledPluginsDir,
+    originalDisableBundledPlugins,
+  );
 });
 
 describe("buildEmbeddedExtensionFactories", () => {
@@ -102,6 +113,106 @@ describe("buildEmbeddedExtensionFactories", () => {
         runId: "run-middleware-identity",
       },
     ]);
+  });
+
+  it("forwards prepared identity through an installed openclaw middleware plugin", async () => {
+    // Installed-plugin path (not registry-push): load a real plugin that declares
+    // contracts.agentToolResultMiddleware for openclaw, then prove the embedded
+    // factory hands that plugin the prepared agent/session/run identity.
+    // Mirrors live-attempt and compaction factory construction (#106910).
+    const tmp = createTempPluginDir(tempDirs, "openclaw-middleware-identity-");
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+
+    const pluginFile = writeTempPlugin({
+      dir: tmp,
+      id: "identity-probe-installed",
+      manifest: {
+        contracts: {
+          agentToolResultMiddleware: ["openclaw"],
+        },
+      },
+      body: `export default {
+  id: "identity-probe-installed",
+  register(api) {
+    api.registerAgentToolResultMiddleware(async (_event, ctx) => {
+      const seen = (globalThis.__openclawIdentityProbeSeen ??= []);
+      seen.push({
+        runtime: ctx.runtime,
+        agentId: ctx.agentId,
+        sessionId: ctx.sessionId,
+        sessionKey: ctx.sessionKey,
+        runId: ctx.runId,
+      });
+    }, { runtimes: ["openclaw"] });
+  },
+};`,
+    });
+
+    const globalWithProbe = globalThis as typeof globalThis & {
+      __openclawIdentityProbeSeen?: Array<{
+        runtime?: string;
+        agentId?: string;
+        sessionId?: string;
+        sessionKey?: string;
+        runId?: string;
+      }>;
+    };
+    globalWithProbe.__openclawIdentityProbeSeen = [];
+
+    loadOpenClawPlugins({
+      workspaceDir: tmp,
+      onlyPluginIds: ["identity-probe-installed"],
+      config: {
+        plugins: {
+          load: { paths: [pluginFile] },
+          allow: ["identity-probe-installed"],
+        },
+      },
+    });
+    expect(listAgentToolResultMiddlewares("openclaw")).toHaveLength(1);
+
+    // Compaction and live attempts both construct factories with prepared identity;
+    // this case uses compaction-shaped ids to cover that sibling call site too.
+    const factories = buildEmbeddedExtensionFactories({
+      cfg: undefined,
+      sessionManager: SessionManager.inMemory(),
+      provider: "openai",
+      modelId: "gpt-5.4",
+      model: undefined,
+      agentId: "agent-compact",
+      sessionId: "session-compact",
+      sessionKey: "agent:main:main",
+      runId: "run-compact-identity",
+    });
+    expect(factories).toHaveLength(1);
+
+    const handlers = new Map<string, Function>();
+    await factories[0]?.({
+      on(event: string, handler: Function) {
+        handlers.set(event, handler);
+      },
+    } as never);
+
+    await handlers.get("tool_result")?.(
+      {
+        toolName: "exec",
+        toolCallId: "call-installed-identity",
+        content: [{ type: "text", text: "ok" }],
+        details: {},
+      },
+      { cwd: "/tmp" },
+    );
+
+    expect(globalWithProbe.__openclawIdentityProbeSeen).toEqual([
+      {
+        runtime: "openclaw",
+        agentId: "agent-compact",
+        sessionId: "session-compact",
+        sessionKey: "agent:main:main",
+        runId: "run-compact-identity",
+      },
+    ]);
+    delete globalWithProbe.__openclawIdentityProbeSeen;
   });
 
   it("bridges middleware mutations with unique fallback tool call ids", async () => {
