@@ -7,13 +7,46 @@ import { installProcessWarningFilter } from "./warning-filter.js";
 const require = createRequire(import.meta.url);
 let validatedSqliteModule: typeof import("node:sqlite") | undefined;
 
+export type NodeSharedSqliteFlag = boolean | number | undefined;
+
+/** Read Node's compile-time shared-SQLite flag when present. */
+export function readNodeSharedSqliteFlag(): NodeSharedSqliteFlag {
+  return (process.config?.variables as { node_shared_sqlite?: boolean | number } | undefined)
+    ?.node_shared_sqlite;
+}
+
+/**
+ * Describe how Node is linked to the *loaded* SQLite library for diagnostics.
+ * Shared builds can report a different process.versions.sqlite than sqlite_version();
+ * only claim "embeds" when build metadata confirms a non-shared Node SQLite.
+ */
+export function describeLoadedSqliteRuntime(
+  version: string,
+  nodeVersion: string,
+  // Required (no default): callers must pass explicit metadata so `undefined`
+  // means "flag unavailable", not "read process.config again".
+  sharedFlag: NodeSharedSqliteFlag,
+): string {
+  if (sharedFlag === true || sharedFlag === 1) {
+    return (
+      `Node ${nodeVersion} is using shared SQLite ${version} ` +
+      `(loaded library; process.versions.sqlite may differ)`
+    );
+  }
+  if (sharedFlag === false || sharedFlag === 0) {
+    return `Node ${nodeVersion} embeds SQLite ${version}`;
+  }
+  // Build metadata unavailable: neutral wording from the observed loaded library.
+  return `Node ${nodeVersion} is using SQLite ${version}`;
+}
+
 function assertSqliteWalResetSafeVersion(version: string, nodeVersion: string): void {
   if (isSqliteWalResetSafeVersion(version)) {
     return;
   }
   throw new Error(
     `OpenClaw requires SQLite 3.51.3+ (or patched 3.50.7+/3.44.6+) for WAL safety; ` +
-      `Node ${nodeVersion} embeds SQLite ${version}, which is affected by the upstream WAL-reset ` +
+      `${describeLoadedSqliteRuntime(version, nodeVersion, readNodeSharedSqliteFlag())}, which is affected by the upstream WAL-reset ` +
       "database corruption bug. Upgrade to Node 22.22.3+, 24.15.0+, or 25.9.0+ before retrying.",
   );
 }
