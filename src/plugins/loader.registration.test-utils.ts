@@ -260,6 +260,163 @@ describe("loadOpenClawPlugins", () => {
     clearPluginInteractiveHandlers();
   });
 
+  it("restores nested registry metadata after failed load and accepts clean retry", () => {
+    useNoBundledPlugins();
+    const existing = writePlugin({
+      id: "existing-stable",
+      filename: "existing-stable.cjs",
+      body: `module.exports = {
+          id: "existing-stable",
+          register(api) {
+            api.registerAgentToolResultMiddleware(async (event) => ({ result: event.result }), {
+              runtimes: ["openclaw"],
+            });
+          },
+        };`,
+    });
+    updatePluginManifest(existing, {
+      contracts: { agentToolResultMiddleware: ["openclaw"] },
+    });
+
+    const failing = writePlugin({
+      id: "retry-target",
+      filename: "retry-target.cjs",
+      body: `module.exports = {
+          id: "retry-target",
+          register(api) {
+            const handler = async (event) => ({ result: event.result });
+            // First registration inserts middleware; second mutates nested runtimes in place.
+            api.registerAgentToolResultMiddleware(handler, { runtimes: ["openclaw"] });
+            api.registerAgentToolResultMiddleware(handler, { runtimes: ["codex"] });
+            api.registerTool({
+              name: "retry_target_tool",
+              description: "Retry target",
+              parameters: {},
+              execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+            });
+            throw new Error("deliberate registration failure");
+          },
+        };`,
+    });
+    updatePluginManifest(failing, {
+      contracts: {
+        tools: ["retry_target_tool"],
+        agentToolResultMiddleware: ["openclaw", "codex"],
+      },
+    });
+
+    const loadConfig = {
+      plugins: {
+        load: { paths: [existing.file, failing.file] },
+        allow: ["existing-stable", "retry-target"],
+        entries: {
+          "existing-stable": { enabled: true },
+          "retry-target": { enabled: true },
+        },
+      },
+    };
+
+    const failedLoad = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: existing.dir,
+      onlyPluginIds: ["existing-stable", "retry-target"],
+      config: loadConfig,
+    });
+    const failedRecord = failedLoad.plugins.find((entry) => entry.id === "retry-target");
+    const existingMiddleware = failedLoad.agentToolResultMiddlewares.filter(
+      (entry) => entry.pluginId === "existing-stable",
+    );
+    const failedMiddleware = failedLoad.agentToolResultMiddlewares.filter(
+      (entry) => entry.pluginId === "retry-target",
+    );
+
+    // Real product-path proof dump for PR Evidence / re-review.
+    console.log(
+      "[proof] after failed registration",
+      JSON.stringify({
+        failedStatus: failedRecord?.status,
+        failedError: failedRecord?.error,
+        failedToolNames: failedRecord?.toolNames,
+        tools: failedLoad.tools.flatMap((entry) => entry.names),
+        middleware: failedLoad.agentToolResultMiddlewares.map((entry) => ({
+          pluginId: entry.pluginId,
+          runtimes: entry.runtimes,
+        })),
+      }),
+    );
+
+    expect(failedRecord?.status).toBe("error");
+    expect(failedRecord?.error).toContain("deliberate registration failure");
+    expect(failedRecord?.toolNames).toEqual([]);
+    expect(failedLoad.tools.flatMap((entry) => entry.names)).not.toContain("retry_target_tool");
+    expect(failedMiddleware).toEqual([]);
+    expect(existingMiddleware).toHaveLength(1);
+    expect(existingMiddleware[0]?.runtimes).toEqual(["openclaw"]);
+
+    // Clean retry uses a new entry path so module load is not sticky to the
+    // broken body (same product sequence as reinstalling/fixing a package).
+    const clean = writePlugin({
+      id: "retry-target",
+      filename: "retry-target-clean.cjs",
+      body: `module.exports = {
+          id: "retry-target",
+          register(api) {
+            api.registerTool({
+              name: "retry_target_tool",
+              description: "Retry target",
+              parameters: {},
+              execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+            });
+          },
+        };`,
+    });
+    updatePluginManifest(clean, { contracts: { tools: ["retry_target_tool"] } });
+
+    const cleanLoad = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: existing.dir,
+      onlyPluginIds: ["existing-stable", "retry-target"],
+      config: {
+        plugins: {
+          load: { paths: [existing.file, clean.file] },
+          allow: ["existing-stable", "retry-target"],
+          entries: {
+            "existing-stable": { enabled: true },
+            "retry-target": { enabled: true },
+          },
+        },
+      },
+    });
+    const cleanRecord = cleanLoad.plugins.find((entry) => entry.id === "retry-target");
+
+    console.log(
+      "[proof] after clean retry",
+      JSON.stringify({
+        cleanStatus: cleanRecord?.status,
+        cleanError: cleanRecord?.error,
+        cleanFailurePhase: cleanRecord?.failurePhase,
+        cleanToolNames: cleanRecord?.toolNames,
+        diagnostics: cleanLoad.diagnostics
+          .filter((entry) => entry.pluginId === "retry-target")
+          .map((entry) => ({ level: entry.level, message: entry.message })),
+        tools: cleanLoad.tools.flatMap((entry) => entry.names),
+        middleware: cleanLoad.agentToolResultMiddlewares.map((entry) => ({
+          pluginId: entry.pluginId,
+          runtimes: entry.runtimes,
+        })),
+      }),
+    );
+
+    expect(cleanRecord?.status).toBe("loaded");
+    expect(cleanRecord?.error).toBeUndefined();
+    expect(cleanRecord?.toolNames).toEqual(["retry_target_tool"]);
+    expect(cleanLoad.tools.flatMap((entry) => entry.names)).toContain("retry_target_tool");
+    expect(
+      cleanLoad.agentToolResultMiddlewares.find((entry) => entry.pluginId === "existing-stable")
+        ?.runtimes,
+    ).toEqual(["openclaw"]);
+  });
+
   it("fails plugin registration when a hook is missing its required name", () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
