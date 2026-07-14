@@ -1027,6 +1027,19 @@ async function quarantineManagedNpmProjectRebuildArtifacts(params: {
   return { quarantineDir, movedArtifactNames };
 }
 
+/**
+ * True when lock metadata exists but omits integrity while the verified npm
+ * resolution required one. That state is usually a poisoned managed project
+ * (e.g. package-lock reconstructed from node_modules after .package-lock.json
+ * cleanup), not a real content mismatch — recovery should quarantine/rebuild.
+ */
+function hasMissingInstalledIntegrity(params: {
+  expected: NpmSpecResolution;
+  installed: ManagedNpmRootInstalledDependency | null;
+}): boolean {
+  return Boolean(params.expected.integrity && params.installed && !params.installed.integrity);
+}
+
 function resolveInstalledNpmResolutionMismatch(params: {
   packageName: string;
   expected: NpmSpecResolution;
@@ -1038,8 +1051,16 @@ function resolveInstalledNpmResolutionMismatch(params: {
   if (params.expected.version && params.installed.version !== params.expected.version) {
     return `npm install resolved ${params.packageName} to version ${params.installed.version ?? "unknown"}, expected ${params.expected.version}`;
   }
-  if (params.expected.integrity && params.installed.integrity !== params.expected.integrity) {
-    return `npm install resolved ${params.packageName} with integrity ${params.installed.integrity ?? "unknown"}, expected ${params.expected.integrity}`;
+  // Missing integrity is a separate recovery signal (hasMissingInstalledIntegrity).
+  // Present-but-different integrity stays fail-closed as a real resolution mismatch.
+  if (params.expected.integrity && params.installed.integrity) {
+    if (params.installed.integrity !== params.expected.integrity) {
+      return `npm install resolved ${params.packageName} with integrity ${params.installed.integrity}, expected ${params.expected.integrity}`;
+    }
+    return null;
+  }
+  if (params.expected.integrity && !params.installed.integrity) {
+    return `npm install resolved ${params.packageName} with integrity unknown, expected ${params.expected.integrity}`;
   }
   return null;
 }
@@ -1415,6 +1436,9 @@ async function installPluginFromManagedNpmRoot(
     };
   }
 
+  // One-shot recovery when package-lock records the package without integrity
+  // (poisoned managed project). A second missing-integrity result fails closed.
+  let recoveredMissingIntegrity = false;
   const runManagedNpmInstall = async (
     prepared: ManagedNpmRootPreparedDependency,
   ): Promise<InstallPluginResult> => {
@@ -1748,6 +1772,34 @@ async function installPluginFromManagedNpmRoot(
         ok: false,
         error: `Failed to verify npm install metadata for ${params.packageName}: ${String(error)}`,
       });
+    }
+    if (
+      hasMissingInstalledIntegrity({
+        expected: params.npmResolution,
+        installed: installedDependency,
+      }) &&
+      !recoveredMissingIntegrity
+    ) {
+      recoveredMissingIntegrity = true;
+      const originalError = resolveInstalledNpmResolutionMismatch({
+        packageName: params.packageName,
+        expected: params.npmResolution,
+        installed: installedDependency,
+      });
+      let quarantine: ManagedNpmProjectQuarantine;
+      try {
+        quarantine = await quarantineManagedNpmProjectRebuildArtifacts({ npmRoot });
+      } catch (error) {
+        return await rollbackFailedManagedNpmInstall({
+          ok: false,
+          error: `npm install recorded package-lock metadata without integrity for ${params.packageName}, but OpenClaw could not quarantine ${npmRoot} for rebuild: ${String(error)}. Original verification error: ${originalError}`,
+        });
+      }
+      logger.warn?.(
+        `npm install recorded package-lock metadata without integrity for ${params.packageName}; quarantined ${formatManagedNpmProjectQuarantineArtifacts(quarantine.movedArtifactNames)} at ${quarantine.quarantineDir} and rebuilding once before retrying.`,
+      );
+      // Restart from a clean managed project so npm records integrity metadata.
+      return await runManagedNpmInstall(prepared);
     }
     const resolutionMismatch = resolveInstalledNpmResolutionMismatch({
       packageName: params.packageName,

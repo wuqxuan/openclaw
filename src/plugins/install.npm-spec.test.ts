@@ -302,6 +302,8 @@ type MockNpmPackage = {
   versions?: string[];
   installedVersion?: string;
   installedIntegrity?: string;
+  /** When true, write lock entry without an integrity field (poisoned project repro). */
+  omitInstalledIntegrity?: boolean;
   materializesRootOpenClaw?: boolean;
   skipLockfileEntry?: boolean;
   packArchivePath?: string;
@@ -325,7 +327,11 @@ function writeNpmRootPackageLock(params: {
     }
     lockPackages[`node_modules/${pkg.packageName}`] = {
       version: pkg.installedVersion ?? pkg.version,
-      integrity: pkg.installedIntegrity ?? pkg.integrity ?? "sha512-plugin-test",
+      ...(pkg.omitInstalledIntegrity
+        ? {}
+        : {
+            integrity: pkg.installedIntegrity ?? pkg.integrity ?? "sha512-plugin-test",
+          }),
     };
     if (pkg.materializesRootOpenClaw) {
       lockPackages["node_modules/openclaw"] = {
@@ -1231,6 +1237,76 @@ describe("installPluginFromNpmSpec", () => {
     expect(result.error).toContain("integrity sha512-evil");
     expect(result.error).toContain("expected sha512-safe");
     expect(fs.existsSync(resolveTestPluginPackageDir(npmRoot, "drift-plugin"))).toBe(false);
+  });
+
+  it("quarantines and rebuilds when package-lock omits integrity instead of looping forever", async () => {
+    const stateDir = suiteTempRootTracker.makeTempDir();
+    const npmRoot = path.join(stateDir, "npm");
+    const packageName = "missing-integrity-plugin";
+    const warnings: string[] = [];
+    const npmProjectRoot = resolvePluginNpmProjectDir({ npmDir: npmRoot, packageName });
+
+    mockNpmViewAndInstall({
+      spec: `${packageName}@1.0.0`,
+      packageName,
+      version: "1.0.0",
+      pluginId: packageName,
+      integrity: "sha512-safe-integrity",
+      npmRoot,
+      expectedDependencySpec: "1.0.0",
+    });
+    const delegate = runCommandWithTimeoutMock.getMockImplementation();
+    if (!delegate) {
+      throw new Error("expected npm mock implementation");
+    }
+    let managedInstallAttempts = 0;
+    const quarantineParent = path.join(npmProjectRoot, "_openclaw-quarantined-npm-projects");
+    runCommandWithTimeoutMock.mockImplementation(
+      async (argv: string[], options?: { cwd?: string }) => {
+        const result = await delegate(argv, options);
+        if (options?.cwd === npmProjectRoot) {
+          if (isManagedNpmInstallCommand(argv)) {
+            managedInstallAttempts += 1;
+          }
+          // Before recovery quarantine, keep lock integrity absent so verification
+          // observes the poisoned package-lock-only reconstruction state.
+          if (!fs.existsSync(quarantineParent)) {
+            const lockPath = path.join(npmProjectRoot, "package-lock.json");
+            if (fs.existsSync(lockPath)) {
+              const lockfile = JSON.parse(fs.readFileSync(lockPath, "utf8")) as {
+                packages?: Record<string, Record<string, unknown>>;
+              };
+              const entry = lockfile.packages?.[`node_modules/${packageName}`];
+              if (entry && "integrity" in entry) {
+                delete entry.integrity;
+                fs.writeFileSync(lockPath, `${JSON.stringify(lockfile, null, 2)}\n`, "utf8");
+              }
+            }
+          }
+        }
+        return result;
+      },
+    );
+
+    const result = await installPluginFromNpmSpec({
+      spec: `${packageName}@1.0.0`,
+      expectedIntegrity: "sha512-safe-integrity",
+      npmDir: npmRoot,
+      logger: { info: () => {}, warn: (message) => warnings.push(message) },
+    });
+
+    if (!result.ok) {
+      throw new Error(`expected install success, got: ${result.error}`);
+    }
+    expect(managedInstallAttempts).toBeGreaterThanOrEqual(2);
+    expect(result.pluginId).toBe(packageName);
+    expect(
+      warnings.some((warning) => warning.includes("package-lock metadata without integrity")),
+    ).toBe(true);
+    expect(fs.existsSync(quarantineParent)).toBe(true);
+    const quarantines = fs.readdirSync(quarantineParent);
+    expect(quarantines.length).toBeGreaterThanOrEqual(1);
+    expect(fs.existsSync(resolveTestPluginPackageDir(npmRoot, packageName))).toBe(true);
   });
 
   it("rejects npm installs when the installed version drifts from verified metadata", async () => {
