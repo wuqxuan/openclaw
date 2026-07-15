@@ -2,20 +2,25 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../config/config.js";
+import type { GatewayBindMode, OpenClawConfig } from "../config/config.js";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 
 const note = vi.hoisted(() => vi.fn());
 const pluginRegistry = vi.hoisted(() => ({ list: [] as unknown[] }));
 const listReadOnlyChannelPluginsForConfigMock = vi.hoisted(() => vi.fn());
 const resolveGatewayBindHostMock = vi.hoisted(() => vi.fn());
+/** Production resolver signature — must match resolveGatewayBindHost for check-test-types. */
+type ResolveGatewayBindHost = (
+  bind: GatewayBindMode | undefined,
+  customHost?: string,
+) => Promise<string>;
 /** Real implementation captured by the gateway/net mock factory for call-through. */
 const actualResolveGatewayBindHost = vi.hoisted(
   () =>
     ({
-      current: undefined as ((bind: unknown, customHost?: string) => Promise<string>) | undefined,
+      current: undefined as ResolveGatewayBindHost | undefined,
     }) as {
-      current: ((bind: unknown, customHost?: string) => Promise<string>) | undefined;
+      current: ResolveGatewayBindHost | undefined;
     },
 );
 
