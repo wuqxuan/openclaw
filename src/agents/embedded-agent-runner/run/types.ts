@@ -266,6 +266,11 @@ export type EmbeddedRunAttemptResult = {
   clientToolCalls?: Array<{ name: string; params: Record<string, unknown> }>;
   /** True when sessions_yield tool was called during this attempt. */
   yieldDetected?: boolean;
+  /**
+   * sessions_yield message for this attempt only. Carried into run meta so the
+   * reply pipeline can deliver an acknowledgment when no other visible payload exists.
+   */
+  yieldMessage?: string;
   replayMetadata: EmbeddedRunReplayMetadata;
   /**
    * Replay metadata for this attempt before prior session state is accumulated.

@@ -1937,7 +1937,10 @@ describe("runReplyAgent typing (heartbeat)", () => {
         acceptedSessionSpawns: [{ runId: "child", childSessionKey: "agent:main:child" }],
       },
     },
-    { label: "yielded continuation", result: { payloads: [], meta: { yielded: true } } },
+    {
+      label: "yielded continuation without message",
+      result: { payloads: [], meta: { yielded: true } },
+    },
     {
       label: "pending tool continuation",
       result: { payloads: [], meta: { pendingToolCalls: [{ name: "hosted_tool" }] } },
@@ -1947,6 +1950,22 @@ describe("runReplyAgent typing (heartbeat)", () => {
     const { run } = createMinimalRun();
 
     await expect(run()).resolves.toBeUndefined();
+  });
+
+  it("delivers sessions_yield message when the turn has no other visible payload", async () => {
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      meta: {
+        yielded: true,
+        yieldMessage: "Research started, I'll send results shortly",
+      },
+    });
+    const { run } = createMinimalRun();
+    const res = await run();
+    const payloads = Array.isArray(res) ? res : res ? [res] : [];
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.text).toBe("Research started, I'll send results shortly");
   });
 
   it.each([

@@ -55,6 +55,7 @@ import {
   registerAgentRunContext,
 } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { defaultRuntime } from "../../runtime.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
@@ -127,6 +128,7 @@ import { admitReplyTurn } from "./reply-turn-admission.js";
 import { buildReplyUsageState } from "./reply-usage-state.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
+import { resolveSessionsYieldAckPayload } from "./sessions-yield-ack.js";
 import { resolveSourceReplyVisibilityPolicy } from "./source-reply-delivery-mode.js";
 import {
   buildStrandedReplyDeliveryFailurePayload,
@@ -1878,6 +1880,19 @@ export function createFollowupRunner(params: {
           (payload) => hasOutboundReplyContent(payload) && !deliveryPlan.isSilentPayload(payload),
         );
       let finalPayloads = resolveDeliveryPayloads(runResult.payloads ?? []);
+      // Mirror agent-runner: synthesize sessions_yield ack when empty and no other delivery.
+      if (finalPayloads.length === 0) {
+        const yieldAckPayload = resolveSessionsYieldAckPayload({
+          yielded: runResult.meta?.yielded === true,
+          yieldMessage: runResult.meta?.yieldMessage,
+          isHeartbeat: opts?.isHeartbeat === true,
+          isSubagentSession: isSubagentSessionKey(replySessionKey ?? run.sessionKey),
+          hasVisibleDelivery: hasCommittedDelivery || hasCompletedTerminalDelivery,
+        });
+        if (yieldAckPayload) {
+          finalPayloads = resolveDeliveryPayloads([yieldAckPayload]);
+        }
+      }
       const hasTerminalReplyPayload = finalPayloads.some(
         (payload) =>
           payload.isReasoning !== true &&

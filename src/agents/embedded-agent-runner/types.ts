@@ -171,6 +171,11 @@ export type EmbeddedAgentRunMeta = {
   agentHarnessResultClassification?: "empty" | "reasoning-only" | "planning-only";
   terminalReplyKind?: "silent-empty";
   yielded?: boolean;
+  /**
+   * User-facing acknowledgment from sessions_yield for this attempt only.
+   * Reply pipeline may emit this when the turn has no other visible payload.
+   */
+  yieldMessage?: string;
   error?: {
     kind:
       | "context_overflow"

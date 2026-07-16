@@ -38,6 +38,7 @@ describe("sessions_yield orchestration", () => {
         promptError: null,
         sessionIdUsed: sessionId,
         yieldDetected: true,
+        yieldMessage: "Research started, I'll send results shortly",
       }),
     );
 
@@ -53,10 +54,14 @@ describe("sessions_yield orchestration", () => {
     // 2. No pending tool calls (yield is NOT a client tool call)
     expect(result.meta.pendingToolCalls).toBeUndefined();
 
-    // 3. Parent session is IDLE (not in ACTIVE_EMBEDDED_RUNS)
+    // 3. Yield message is carried on meta for the reply pipeline
+    expect(result.meta.yielded).toBe(true);
+    expect(result.meta.yieldMessage).toBe("Research started, I'll send results shortly");
+
+    // 4. Parent session is IDLE (not in ACTIVE_EMBEDDED_RUNS)
     expect(isEmbeddedAgentRunActive(sessionId)).toBe(false);
 
-    // 4. Steer would fail (message delivery must take direct path, not steer)
+    // 5. Steer would fail (message delivery must take direct path, not steer)
     const queueResult = queueEmbeddedAgentMessageWithOutcome(sessionId, "subagent result");
     expect(queueResult.queued).toBe(false);
     if (queueResult.queued) {

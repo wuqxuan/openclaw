@@ -52,6 +52,7 @@ import {
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
+import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import {
@@ -144,6 +145,7 @@ import { buildReplyUsageState, recordReplyUsageState } from "./reply-usage-state
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
+import { resolveSessionsYieldAckPayload } from "./sessions-yield-ack.js";
 import { resolveSourceReplyVisibilityPolicy } from "./source-reply-delivery-mode.js";
 import {
   buildStrandedReplyDeliveryFailurePayload,
@@ -1784,7 +1786,7 @@ export async function runReplyAgent(params: {
       }
     }
 
-    const payloadArray = runResult.payloads ?? [];
+    let payloadArray = runResult.payloads ?? [];
 
     if (blockReplyPipeline) {
       await blockReplyPipeline.flush({ force: true });
@@ -1972,6 +1974,24 @@ export async function runReplyAgent(params: {
         blockReplyPipeline,
         directlySentBlockPayloads,
       }) || hasCompletedTerminalDeliveryEvidence(runResult);
+    // sessions_yield ack: deliver once when the turn otherwise has no visible payload.
+    // Skip when block/message-tool delivery already happened (no duplicate), and never
+    // surface yield text for heartbeat or subagent sessions (internal context only).
+    if (payloadArray.length === 0) {
+      const yieldAckPayload = resolveSessionsYieldAckPayload({
+        yielded: runResult.meta?.yielded === true,
+        yieldMessage: runResult.meta?.yieldMessage,
+        isHeartbeat,
+        isSubagentSession: isSubagentSessionKey(sessionKey ?? followupRun.run.sessionKey),
+        hasVisibleDelivery:
+          successfulSideEffectDelivery ||
+          successfulTerminalDelivery ||
+          (directlySentBlockPayloads?.length ?? 0) > 0,
+      });
+      if (yieldAckPayload) {
+        payloadArray = [yieldAckPayload];
+      }
+    }
     // Compaction notices are progress, not a terminal reply. Dispatcher-backed
     // delivery settles after this run returns, so it cannot prove turn completion here.
     const shouldDeliverTerminalFailure = Boolean(
