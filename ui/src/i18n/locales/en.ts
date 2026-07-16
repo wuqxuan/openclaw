@@ -1063,6 +1063,7 @@ export const en: TranslationMap = {
       manage: "Manage →",
       browse: "Browse →",
       configure: "Configure →",
+      unavailable: "Unavailable",
     },
     appearance: {
       title: "Appearance",

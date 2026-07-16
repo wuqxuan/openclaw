@@ -11,7 +11,12 @@ import type {
 } from "../../app/context.ts";
 import { loadLocalUserIdentity } from "../../app/settings.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
-import { ConfigPage, configSelectionFromSearch, supportsSystemInfo } from "./config-page.ts";
+import {
+  ConfigPage,
+  configSelectionFromSearch,
+  supportsQuickAutomation,
+  supportsSystemInfo,
+} from "./config-page.ts";
 import type { ConfigViewState } from "./view.ts";
 
 function deferred<T>() {
@@ -82,6 +87,25 @@ describe("supportsSystemInfo", () => {
     expect(supportsSystemInfo(hello)).toBe(true);
     expect(supportsSystemInfo(unsupportedHello)).toBe(false);
     expect(supportsSystemInfo(null)).toBe(false);
+  });
+});
+
+describe("supportsQuickAutomation", () => {
+  it("requires both cron.list and skills.status methods", () => {
+    const both = {
+      features: { methods: ["cron.list", "skills.status"] },
+    } as ApplicationGatewaySnapshot["hello"];
+    const partial = {
+      features: { methods: ["cron.list"] },
+    } as ApplicationGatewaySnapshot["hello"];
+    const none = {
+      features: { methods: ["health"] },
+    } as ApplicationGatewaySnapshot["hello"];
+
+    expect(supportsQuickAutomation(both)).toBe(true);
+    expect(supportsQuickAutomation(partial)).toBe(false);
+    expect(supportsQuickAutomation(none)).toBe(false);
+    expect(supportsQuickAutomation(null)).toBe(false);
   });
 });
 
@@ -192,6 +216,75 @@ describe("ConfigPage system info", () => {
     secondResponse.resolve(current);
     await secondLoad;
     expect(state.systemInfo).toBe(current);
+    page.remove();
+  });
+});
+
+describe("ConfigPage quick automation inventory", () => {
+  it("derives counts from cron.list and skills.status", async () => {
+    const client = {
+      request: vi
+        .fn()
+        .mockImplementationOnce(() => Promise.resolve({ jobs: [{}, {}, {}], total: 3 }))
+        .mockImplementationOnce(() => Promise.resolve({ skills: [{}, {}, {}, {}, {}] })),
+    } as unknown as GatewayBrowserClient;
+    const snapshot = {
+      client,
+      connected: true,
+      hello: { features: { methods: ["cron.list", "skills.status"] } },
+    } as ApplicationGatewaySnapshot;
+    const gateway = { snapshot } as ApplicationGateway;
+    const page = new ConfigPage();
+    const state = page as unknown as {
+      context: ApplicationContext;
+      subscriptions: ReactiveController;
+      shouldUpdate: () => boolean;
+      syncQuickAutomationPolling: () => void;
+      synchronizeQuickAutomationGateway: (gateway: ApplicationGateway) => void;
+      loadQuickAutomation: () => Promise<void>;
+      quickAutomation: { cronJobCount: number; skillCount: number } | null;
+      quickAutomationUnavailable: boolean;
+    };
+    page.removeController(state.subscriptions);
+    state.shouldUpdate = () => false;
+    state.syncQuickAutomationPolling = () => undefined;
+    state.context = { gateway } as ApplicationContext;
+    document.body.append(page);
+    state.synchronizeQuickAutomationGateway(gateway);
+
+    await state.loadQuickAutomation();
+
+    expect(state.quickAutomation).toEqual({ cronJobCount: 3, skillCount: 5 });
+    expect(state.quickAutomationUnavailable).toBe(false);
+    page.remove();
+  });
+
+  it("marks the inventory unavailable when the gateway lacks support", () => {
+    const snapshot = {
+      client: {} as GatewayBrowserClient,
+      connected: true,
+      hello: { features: { methods: ["health"] } },
+    } as ApplicationGatewaySnapshot;
+    const gateway = { snapshot } as ApplicationGateway;
+    const page = new ConfigPage();
+    const state = page as unknown as {
+      context: ApplicationContext;
+      subscriptions: ReactiveController;
+      shouldUpdate: () => boolean;
+      syncQuickAutomationPolling: () => void;
+      synchronizeQuickAutomationGateway: (gateway: ApplicationGateway) => void;
+      quickAutomation: { cronJobCount: number; skillCount: number } | null;
+      quickAutomationUnavailable: boolean;
+    };
+    page.removeController(state.subscriptions);
+    state.shouldUpdate = () => false;
+    state.syncQuickAutomationPolling = () => undefined;
+    state.context = { gateway } as ApplicationContext;
+    document.body.append(page);
+    state.synchronizeQuickAutomationGateway(gateway);
+
+    expect(state.quickAutomationUnavailable).toBe(true);
+    expect(state.quickAutomation).toBeNull();
     page.remove();
   });
 });

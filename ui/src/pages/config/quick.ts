@@ -58,9 +58,10 @@ export type QuickSettingsChannel = {
 };
 
 type QuickSettingsAutomation = {
-  cronJobCount: number;
-  skillCount: number;
+  cronJobCount: number | null;
+  skillCount: number | null;
   mcpServerCount: number;
+  unavailable: boolean;
 };
 
 export type QuickSettingsSecurity = {
@@ -454,32 +455,45 @@ function renderChannelsSection(props: QuickSettingsProps) {
 }
 
 function renderAutomationsSection(props: QuickSettingsProps) {
-  const { cronJobCount, skillCount, mcpServerCount } = props.automation;
+  const { cronJobCount, skillCount, mcpServerCount, unavailable } = props.automation;
   const automationRow = (title: string, actionLabel: string, onClick?: () => void) =>
     renderSettingsRow({
       title,
       control: html`<button class="btn" @click=${onClick}>${actionLabel}</button>`,
     });
+  // Counts are null until the gateway inventory loads (and while offline); a
+  // null count renders a neutral placeholder rather than a misleading "0".
+  const automationCountLabel = (
+    count: number | null,
+    singularKey: string,
+    pluralKey: string,
+  ): string => {
+    if (unavailable) {
+      return t("quickSettings.automation.unavailable");
+    }
+    if (count == null) {
+      return "-";
+    }
+    return t(count === 1 ? singularKey : pluralKey, { count: String(count) });
+  };
   return renderTargetSection(
     GENERAL_SETTINGS_TARGET_IDS.automations,
     { title: t("quickSettings.automation.title") },
     [
       automationRow(
-        t(
-          cronJobCount === 1
-            ? "quickSettings.automation.scheduledTask"
-            : "quickSettings.automation.scheduledTasks",
-          { count: String(cronJobCount) },
+        automationCountLabel(
+          cronJobCount,
+          "quickSettings.automation.scheduledTask",
+          "quickSettings.automation.scheduledTasks",
         ),
         t("quickSettings.automation.manage"),
         props.onManageCron,
       ),
       automationRow(
-        t(
-          skillCount === 1
-            ? "quickSettings.automation.installedSkill"
-            : "quickSettings.automation.installedSkills",
-          { count: String(skillCount) },
+        automationCountLabel(
+          skillCount,
+          "quickSettings.automation.installedSkill",
+          "quickSettings.automation.installedSkills",
         ),
         t("quickSettings.automation.browse"),
         props.onBrowseSkills,

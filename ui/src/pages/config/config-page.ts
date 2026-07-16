@@ -4,7 +4,7 @@ import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { SystemInfoResult } from "../../../../packages/gateway-protocol/src/index.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
-import type { FastMode } from "../../api/types.ts";
+import type { CronJobsListResult, FastMode, SkillStatusReport } from "../../api/types.ts";
 import { pathForRoute, type RouteId } from "../../app-route-paths.ts";
 import {
   applicationContext,
@@ -66,6 +66,11 @@ type ConfigFormMode = "form" | "raw";
 type ConfigSelection = { activeSection: string | null; activeSubsection: string | null };
 type LocalUiSetting = "textScale" | "chatSendShortcut" | "chatFollowUpMode" | "catalogOpenTarget";
 
+type QuickAutomationSnapshot = {
+  cronJobCount: number;
+  skillCount: number;
+};
+
 const CONFIG_PAGE_I18N_KEYS = {
   config: "config",
   communications: "communications",
@@ -86,6 +91,8 @@ const KNOWN_CHANNELS = [
 ] as const;
 
 const SYSTEM_INFO_POLL_INTERVAL_MS = 10_000;
+// Automation inventories change rarely; poll less aggressively than system info.
+const QUICK_AUTOMATION_POLL_INTERVAL_MS = 30_000;
 
 function isUnknownSystemInfoMethodError(error: unknown): boolean {
   return (
@@ -97,6 +104,20 @@ function isUnknownSystemInfoMethodError(error: unknown): boolean {
 
 export function supportsSystemInfo(hello: ApplicationGatewaySnapshot["hello"]): boolean {
   return hello?.features?.methods?.includes("system.info") === true;
+}
+
+function isUnknownQuickAutomationMethodError(error: unknown): boolean {
+  return (
+    error instanceof GatewayRequestError &&
+    error.gatewayCode === "INVALID_REQUEST" &&
+    (error.message.includes("unknown method: cron.list") ||
+      error.message.includes("unknown method: skills.status"))
+  );
+}
+
+export function supportsQuickAutomation(hello: ApplicationGatewaySnapshot["hello"]): boolean {
+  const methods = hello?.features?.methods;
+  return Boolean(methods?.includes("cron.list") && methods?.includes("skills.status"));
 }
 
 function defaultConfigSelection(pageId: ConfigPageId): ConfigSelection {
@@ -289,6 +310,20 @@ export class ConfigPage extends OpenClawLightDomElement {
     },
     false,
   );
+  @state() private quickAutomation: QuickAutomationSnapshot | null = null;
+  @state() private quickAutomationUnavailable = false;
+  private quickAutomationGatewaySource: ApplicationContext["gateway"] | null = null;
+  private quickAutomationClient: GatewayBrowserClient | null = null;
+  private quickAutomationLoading = false;
+  private quickAutomationRequestId = 0;
+  private readonly quickAutomationPolling = new PollController(
+    this,
+    QUICK_AUTOMATION_POLL_INTERVAL_MS,
+    () => {
+      void this.loadQuickAutomation();
+    },
+    false,
+  );
   private pendingRouteTargetId: string | null = null;
   private readonly subscriptions = new SubscriptionsController(this)
     .watch(
@@ -307,7 +342,10 @@ export class ConfigPage extends OpenClawLightDomElement {
     .watch(
       () => this.context?.gateway,
       (gateway, notify) => gateway.subscribe(notify),
-      (gateway) => this.synchronizeSystemInfoGateway(gateway),
+      (gateway) => {
+        this.synchronizeSystemInfoGateway(gateway);
+        this.synchronizeQuickAutomationGateway(gateway);
+      },
     )
     .watch(
       () => this.context?.webPush,
@@ -338,11 +376,15 @@ export class ConfigPage extends OpenClawLightDomElement {
 
   override disconnectedCallback() {
     this.systemInfoPolling.stop();
+    this.quickAutomationPolling.stop();
     this.invalidateSystemInfoRequest();
+    this.invalidateQuickAutomationRequest();
     this.runtimeConfigSource = null;
     this.resetConfigViewState();
     this.systemInfoGatewaySource = null;
     this.systemInfoClient = null;
+    this.quickAutomationGatewaySource = null;
+    this.quickAutomationClient = null;
     this.subscriptions.clear();
     super.disconnectedCallback();
   }
@@ -358,8 +400,10 @@ export class ConfigPage extends OpenClawLightDomElement {
     const modeChanged = changed.has("settingsMode") && changed.get("settingsMode") !== undefined;
     if (pageChanged || modeChanged) {
       this.invalidateSystemInfoRequest();
+      this.invalidateQuickAutomationRequest();
     }
     this.syncSystemInfoPolling();
+    this.syncQuickAutomationPolling();
     this.scrollToPendingRouteTarget();
     // Device labels stay hidden until the user grants mic permission; the
     // refresh button next to the picker requests it explicitly.
@@ -561,6 +605,133 @@ export class ConfigPage extends OpenClawLightDomElement {
     } finally {
       if (this.isCurrentSystemInfoRequest(requestId, client, gatewaySource)) {
         this.systemInfoLoading = false;
+      }
+    }
+  }
+
+  private synchronizeQuickAutomationGateway(gateway: ApplicationContext["gateway"]) {
+    if (gateway !== this.quickAutomationGatewaySource) {
+      this.quickAutomationPolling.stop();
+      this.invalidateQuickAutomationRequest();
+      this.quickAutomationGatewaySource = gateway;
+      this.quickAutomationClient = null;
+      this.quickAutomation = null;
+      this.quickAutomationUnavailable = false;
+    }
+    this.handleQuickAutomationGatewaySnapshot(gateway.snapshot);
+  }
+
+  private handleQuickAutomationGatewaySnapshot(snapshot: ApplicationGatewaySnapshot) {
+    const clientChanged = snapshot.client !== this.quickAutomationClient;
+    const supported = supportsQuickAutomation(snapshot.hello);
+    this.quickAutomationClient = snapshot.client;
+    if (clientChanged) {
+      this.invalidateQuickAutomationRequest();
+      this.quickAutomation = null;
+      this.quickAutomationUnavailable = false;
+    } else if (!snapshot.connected) {
+      this.invalidateQuickAutomationRequest();
+      this.quickAutomation = null;
+    }
+    if (snapshot.connected && snapshot.hello) {
+      this.quickAutomationUnavailable = !supported;
+      if (!supported) {
+        this.invalidateQuickAutomationRequest();
+        this.quickAutomation = null;
+      }
+    }
+    this.syncQuickAutomationPolling();
+  }
+
+  private syncQuickAutomationPolling() {
+    // Automation counters share the Quick Settings visibility gate with the
+    // system info section; both render only while Simple settings is open.
+    const gateway = this.context.gateway.snapshot;
+    const shouldPoll =
+      this.isConnected &&
+      this.isSystemInfoVisible() &&
+      !this.quickAutomationUnavailable &&
+      gateway.connected &&
+      supportsQuickAutomation(gateway.hello) &&
+      gateway.client != null;
+    if (!shouldPoll) {
+      this.quickAutomationPolling.stop();
+      return;
+    }
+    if (this.quickAutomationPolling.start()) {
+      void this.loadQuickAutomation();
+    }
+  }
+
+  private invalidateQuickAutomationRequest() {
+    this.quickAutomationRequestId += 1;
+    this.quickAutomationLoading = false;
+  }
+
+  private isCurrentQuickAutomationRequest(
+    requestId: number,
+    client: GatewayBrowserClient,
+    gatewaySource: ApplicationContext["gateway"],
+  ): boolean {
+    const gateway = gatewaySource.snapshot;
+    return (
+      this.isConnected &&
+      this.isSystemInfoVisible() &&
+      requestId === this.quickAutomationRequestId &&
+      this.quickAutomationGatewaySource === gatewaySource &&
+      this.context.gateway === gatewaySource &&
+      gateway.connected &&
+      gateway.client === client
+    );
+  }
+
+  private async loadQuickAutomation() {
+    const gatewaySource = this.quickAutomationGatewaySource;
+    if (!gatewaySource || gatewaySource !== this.context.gateway) {
+      return;
+    }
+    const gateway = gatewaySource.snapshot;
+    const client = gateway.client;
+    if (
+      !gateway.connected ||
+      !client ||
+      !this.isSystemInfoVisible() ||
+      this.quickAutomationUnavailable ||
+      this.quickAutomationLoading
+    ) {
+      return;
+    }
+
+    const requestId = ++this.quickAutomationRequestId;
+    this.quickAutomationLoading = true;
+    try {
+      // Both inventories load in parallel; a missing scope or unsupported method
+      // on either surfaces an unavailable state rather than a misleading zero.
+      const [cronResult, skillReport] = await Promise.all([
+        client.request<CronJobsListResult>("cron.list", {}),
+        client.request<SkillStatusReport | undefined>("skills.status", {}),
+      ]);
+      if (!this.isCurrentQuickAutomationRequest(requestId, client, gatewaySource)) {
+        return;
+      }
+      const cronJobs = Array.isArray(cronResult?.jobs) ? cronResult.jobs : [];
+      const cronJobCount =
+        typeof cronResult?.total === "number" ? cronResult.total : cronJobs.length;
+      const skillCount = Array.isArray(skillReport?.skills) ? skillReport.skills.length : 0;
+      this.quickAutomation = { cronJobCount, skillCount };
+    } catch (error) {
+      if (!this.isCurrentQuickAutomationRequest(requestId, client, gatewaySource)) {
+        return;
+      }
+      if (isMissingOperatorReadScopeError(error) || isUnknownQuickAutomationMethodError(error)) {
+        this.quickAutomation = null;
+        this.quickAutomationUnavailable = true;
+        this.quickAutomationPolling.stop();
+      }
+      // Transient errors keep the last snapshot; the next poll tick retries.
+    } finally {
+      if (this.isCurrentQuickAutomationRequest(requestId, client, gatewaySource)) {
+        this.quickAutomationLoading = false;
       }
     }
   }
@@ -858,9 +1029,10 @@ export class ConfigPage extends OpenClawLightDomElement {
       fastMode: fastMode === "auto" || typeof fastMode === "boolean" ? fastMode : false,
       channels: quickChannels(configObject),
       automation: {
-        cronJobCount: 0,
-        skillCount: 0,
+        cronJobCount: this.quickAutomation?.cronJobCount ?? null,
+        skillCount: this.quickAutomation?.skillCount ?? null,
         mcpServerCount: mcpServerCount(configObject),
+        unavailable: this.quickAutomationUnavailable,
       },
       security: extractQuickSettingsSecurity(configObject),
       systemInfo: this.systemInfo,

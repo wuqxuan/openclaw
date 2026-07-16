@@ -1,5 +1,28 @@
 {
-  "fallbacks": {},
-  "sourceHash": "82b347646c147b6f3560a52a12e7b46718a567547b9dd2abf3be2ccfbbb0f30a",
+  "fallbacks": {
+    "quickSettings.automation.unavailable": [
+      "ar",
+      "de",
+      "es",
+      "fa",
+      "fr",
+      "hi",
+      "id",
+      "it",
+      "ja-JP",
+      "ko",
+      "nl",
+      "pl",
+      "pt-BR",
+      "ru",
+      "th",
+      "tr",
+      "uk",
+      "vi",
+      "zh-CN",
+      "zh-TW"
+    ]
+  },
+  "sourceHash": "c4f2e87e9b1f0cdba54ee8c71f7d74cb107283c4e3e353486cf35199eade729d",
   "version": 1
 }

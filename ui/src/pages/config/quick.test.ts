@@ -76,9 +76,10 @@ function createProps(overrides: Partial<QuickSettingsProps> = {}): QuickSettings
     channels: [],
     onChannelConfigure: vi.fn(),
     automation: {
-      cronJobCount: 0,
-      skillCount: 0,
+      cronJobCount: null,
+      skillCount: null,
       mcpServerCount: 0,
+      unavailable: false,
     },
     onManageCron: vi.fn(),
     onBrowseSkills: vi.fn(),
@@ -1056,5 +1057,88 @@ describe("renderQuickSettings", () => {
 
     expect(setTheme).toHaveBeenCalledWith("custom", { element: customButton });
     expect(onOpenCustomThemeImport).not.toHaveBeenCalled();
+  });
+
+  it("renders real automation counts from the loaded inventory", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderQuickSettings(
+        createProps({
+          automation: {
+            cronJobCount: 3,
+            skillCount: 5,
+            mcpServerCount: 2,
+            unavailable: false,
+          },
+        }),
+      ),
+      container,
+    );
+
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("#settings-general-automations .settings-row"),
+    );
+    expect(rows[0]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe(
+      "3 scheduled tasks",
+    );
+    expect(rows[1]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe(
+      "5 skills installed",
+    );
+    expect(rows[2]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe(
+      "2 MCP servers",
+    );
+  });
+
+  it("renders a placeholder instead of a misleading zero before inventory loads", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderQuickSettings(
+        createProps({
+          automation: {
+            cronJobCount: null,
+            skillCount: null,
+            mcpServerCount: 0,
+            unavailable: false,
+          },
+        }),
+      ),
+      container,
+    );
+
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("#settings-general-automations .settings-row"),
+    );
+    expect(rows[0]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe("-");
+    expect(rows[1]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe("-");
+    // The MCP count is derived locally, so it still renders a count.
+    expect(rows[2]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe(
+      "0 MCP servers",
+    );
+  });
+
+  it("renders an unavailable label when the gateway cannot serve the inventory", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderQuickSettings(
+        createProps({
+          automation: {
+            cronJobCount: null,
+            skillCount: null,
+            mcpServerCount: 0,
+            unavailable: true,
+          },
+        }),
+      ),
+      container,
+    );
+
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("#settings-general-automations .settings-row"),
+    );
+    expect(rows[0]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe("Unavailable");
+    expect(rows[1]?.querySelector(".settings-row__title")?.textContent?.trim()).toBe("Unavailable");
   });
 });
