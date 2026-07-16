@@ -48,7 +48,7 @@ type ScopedToolsCall = {
   modelProvider?: string;
   modelId?: string;
   yieldContextCacheKey?: string;
-  onYield?: (message: string) => Promise<void> | void;
+  onYield?: (message: string, acknowledgment?: string) => Promise<void> | void;
   accountId?: string;
   messageProvider?: string;
   clientCaps?: string[];

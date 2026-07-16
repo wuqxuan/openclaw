@@ -99,8 +99,11 @@ type DynamicToolBuildParams = {
   ignoreRuntimePlan?: boolean;
   /** Host fact resolver; injectable only for focused plugin contract tests. */
   isHostScopedToolActive?: (toolName: string) => boolean;
-  /** Called when sessions_yield fires; message is the user-facing acknowledgment. */
-  onYieldDetected: (message?: string) => void;
+  /**
+   * Called when sessions_yield fires. Only the explicit user-visible
+   * acknowledgment is passed; hidden `message` context stays on the tool event.
+   */
+  onYieldDetected: (acknowledgment?: string) => void;
   onCodexAppServerEvent?: (event: CodexDynamicToolBuildEvent) => void;
   onPersistentWebSearchPolicyResolved?: (allowed: boolean) => void;
   onWebSearchPolicyResolved?: (allowed: boolean) => void;
@@ -316,12 +319,16 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
     forceMessageTool: shouldForceMessageTool(messagePolicyParams),
     enableHeartbeatTool: params.trigger === "heartbeat" || input.forceHeartbeatTool === true,
     forceHeartbeatTool: params.trigger === "heartbeat" || input.forceHeartbeatTool === true,
-    onYield: (message) => {
-      // Preserve the yield text so the reply pipeline can deliver an empty-turn ack.
-      input.onYieldDetected(message);
+    onYield: (message, acknowledgment) => {
+      // Only the explicit acknowledgment is user-visible; message stays hidden context.
+      input.onYieldDetected(acknowledgment);
       input.onCodexAppServerEvent?.({
         stream: "codex_app_server.tool",
-        data: { name: "sessions_yield", message },
+        data: {
+          name: "sessions_yield",
+          message,
+          ...(acknowledgment ? { acknowledgment } : {}),
+        },
       });
     },
     recordToolPrepStage: (name) => {

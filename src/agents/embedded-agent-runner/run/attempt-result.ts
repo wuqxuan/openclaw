@@ -64,6 +64,7 @@ type EmbeddedAttemptResultState = Pick<
   | "contextBudgetStatus"
   | "yieldDetected"
   | "yieldMessage"
+  | "yieldAcknowledgment"
   | "didDeliverSourceReplyViaMessageTool"
 > & {
   diagnosticTrace: DiagnosticTraceContext;
@@ -407,7 +408,10 @@ export function completeEmbeddedAttemptResult(
     compactionTokensAfter: getLastCompactionTokensAfter(),
     clientToolCalls,
     yieldDetected: state.yieldDetected || undefined,
-    ...(state.yieldDetected && state.yieldMessage ? { yieldMessage: state.yieldMessage } : {}),
+    // Only the explicit acknowledgment is attempt-result surface for reply delivery.
+    ...(state.yieldDetected && state.yieldAcknowledgment
+      ? { yieldAcknowledgment: state.yieldAcknowledgment }
+      : {}),
   };
   return finalizeEmbeddedAttempt({
     result,

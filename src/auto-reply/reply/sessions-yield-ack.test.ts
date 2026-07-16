@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { resolveSessionsYieldAckPayload } from "./sessions-yield-ack.js";
 
 describe("resolveSessionsYieldAckPayload", () => {
-  it("emits the yield message when the turn has no other visible delivery", () => {
+  it("emits the explicit acknowledgment when the turn has no other visible delivery", () => {
     expect(
       resolveSessionsYieldAckPayload({
         yielded: true,
-        yieldMessage: "Research started, I'll send results shortly",
+        yieldAcknowledgment: "Research started, I'll send results shortly",
         isHeartbeat: false,
         isSubagentSession: false,
         hasVisibleDelivery: false,
@@ -14,11 +14,11 @@ describe("resolveSessionsYieldAckPayload", () => {
     ).toEqual({ text: "Research started, I'll send results shortly" });
   });
 
-  it("trims whitespace from the yield message", () => {
+  it("trims whitespace from the acknowledgment", () => {
     expect(
       resolveSessionsYieldAckPayload({
         yielded: true,
-        yieldMessage: "  waiting on workers  ",
+        yieldAcknowledgment: "  waiting on workers  ",
         isHeartbeat: false,
         isSubagentSession: false,
         hasVisibleDelivery: false,
@@ -30,7 +30,7 @@ describe("resolveSessionsYieldAckPayload", () => {
     expect(
       resolveSessionsYieldAckPayload({
         yielded: false,
-        yieldMessage: "should not show",
+        yieldAcknowledgment: "should not show",
         isHeartbeat: false,
         isSubagentSession: false,
         hasVisibleDelivery: false,
@@ -38,11 +38,21 @@ describe("resolveSessionsYieldAckPayload", () => {
     ).toBeUndefined();
   });
 
-  it("stays silent when yield has no message", () => {
+  it("stays silent when yield has no acknowledgment (hidden message is not used)", () => {
+    // Regression: shipped `message` remains hidden continuation context and
+    // must never be inferred as user-visible text by this resolver.
     expect(
       resolveSessionsYieldAckPayload({
         yielded: true,
-        yieldMessage: "   ",
+        yieldAcknowledgment: "   ",
+        isHeartbeat: false,
+        isSubagentSession: false,
+        hasVisibleDelivery: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveSessionsYieldAckPayload({
+        yielded: true,
         isHeartbeat: false,
         isSubagentSession: false,
         hasVisibleDelivery: false,
@@ -54,7 +64,7 @@ describe("resolveSessionsYieldAckPayload", () => {
     expect(
       resolveSessionsYieldAckPayload({
         yielded: true,
-        yieldMessage: "Research started",
+        yieldAcknowledgment: "Research started",
         isHeartbeat: false,
         isSubagentSession: false,
         hasVisibleDelivery: true,
@@ -66,7 +76,7 @@ describe("resolveSessionsYieldAckPayload", () => {
     expect(
       resolveSessionsYieldAckPayload({
         yielded: true,
-        yieldMessage: "heartbeat yield",
+        yieldAcknowledgment: "heartbeat yield",
         isHeartbeat: true,
         isSubagentSession: false,
         hasVisibleDelivery: false,
@@ -78,7 +88,7 @@ describe("resolveSessionsYieldAckPayload", () => {
     expect(
       resolveSessionsYieldAckPayload({
         yielded: true,
-        yieldMessage: "child yield",
+        yieldAcknowledgment: "child yield",
         isHeartbeat: false,
         isSubagentSession: true,
         hasVisibleDelivery: false,

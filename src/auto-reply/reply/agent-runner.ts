@@ -1975,12 +1975,13 @@ export async function runReplyAgent(params: {
         directlySentBlockPayloads,
       }) || hasCompletedTerminalDeliveryEvidence(runResult);
     // sessions_yield ack: deliver once when the turn otherwise has no visible payload.
+    // Only the explicit acknowledgment field is eligible — hidden message stays internal.
     // Skip when block/message-tool delivery already happened (no duplicate), and never
     // surface yield text for heartbeat or subagent sessions (internal context only).
     if (payloadArray.length === 0) {
       const yieldAckPayload = resolveSessionsYieldAckPayload({
         yielded: runResult.meta?.yielded === true,
-        yieldMessage: runResult.meta?.yieldMessage,
+        yieldAcknowledgment: runResult.meta?.yieldAcknowledgment,
         isHeartbeat,
         isSubagentSession: isSubagentSessionKey(sessionKey ?? followupRun.run.sessionKey),
         hasVisibleDelivery:

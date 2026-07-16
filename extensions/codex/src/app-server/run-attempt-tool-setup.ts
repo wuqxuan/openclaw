@@ -63,7 +63,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   }
   const toolState = {
     yieldDetected: false,
-    yieldMessage: undefined as string | undefined,
+    yieldAcknowledgment: undefined as string | undefined,
     persistentWebSearchAllowed: undefined as boolean | undefined,
     webSearchAllowed: false,
   };
@@ -122,11 +122,11 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
     sessionAgentId,
     pluginConfig,
     profilerEnabled,
-    onYieldDetected: (message?: string) => {
+    onYieldDetected: (acknowledgment?: string) => {
       toolState.yieldDetected = true;
-      const trimmed = typeof message === "string" ? message.trim() : "";
+      const trimmed = typeof acknowledgment === "string" ? acknowledgment.trim() : "";
       if (trimmed) {
-        toolState.yieldMessage = trimmed;
+        toolState.yieldAcknowledgment = trimmed;
       }
     },
     onCodexAppServerEvent: (event: Parameters<typeof emitCodexAppServerEvent>[1]) => {

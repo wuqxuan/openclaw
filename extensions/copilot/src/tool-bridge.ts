@@ -427,14 +427,16 @@ function buildOpenClawCodingToolsOptions(
     // recordToolPrepStage intentionally omitted: copilot does not
     // surface attempt-stage telemetry yet. Codex omits this too.
     onToolOutcome: a.onToolOutcome,
-    onYield: (message) => {
+    onYield: (message, _acknowledgment) => {
       // Notify the caller first so the final attempt result can carry
       // yieldDetected even if the abort below races a concurrent
       // settle path. Errors thrown by the caller's handler must not
       // skip the abort, so wrap defensively. Mirrors PI (`attempt.ts`
-      // sets `yieldDetected = true; yieldMessage = message;` before
-      // calling abort) and codex (`onYieldDetected()` runs before the
-      // run-abort controller fires).
+      // sets yieldDetected + hidden message before abort) and codex
+      // (`onYieldDetected` runs before the run-abort controller fires).
+      // Copilot currently uses this signal for yieldDetected only; user-
+      // visible empty-turn ack is owned by the reply pipeline + codex/
+      // embedded paths that thread `acknowledgment` explicitly.
       try {
         input.onYieldDetected?.(message);
       } catch (error) {

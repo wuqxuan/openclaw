@@ -392,6 +392,7 @@ export async function runEmbeddedAttemptSettledPhase(
       contextBudgetStatus,
       yieldDetected: input.lifecycle.readYieldState().yieldDetected,
       yieldMessage: input.lifecycle.readYieldState().yieldMessage ?? undefined,
+      yieldAcknowledgment: input.lifecycle.readYieldState().yieldAcknowledgment ?? undefined,
       didDeliverSourceReplyViaMessageTool: hasDeliveredSourceReply(),
     },
     clientToolCallSlots,

@@ -1,12 +1,14 @@
 /**
  * Resolve a one-shot user-facing sessions_yield acknowledgment payload.
  *
- * Only emits when the attempt yielded with a non-empty message and the turn
- * produced no other visible delivery. Heartbeat and subagent sessions keep the
- * message as internal context only.
+ * Only emits when the attempt yielded with an explicit non-empty acknowledgment
+ * and the turn produced no other visible delivery. Hidden `message` context is
+ * never used here — that field remains internal continuation text.
+ * Heartbeat and subagent sessions keep yields as internal context only.
  */
 export function resolveSessionsYieldAckPayload(params: {
-  yieldMessage?: string | null;
+  /** Explicit user-visible acknowledgment only; never the hidden yield message. */
+  yieldAcknowledgment?: string | null;
   yielded?: boolean;
   isHeartbeat: boolean;
   isSubagentSession: boolean;
@@ -18,7 +20,8 @@ export function resolveSessionsYieldAckPayload(params: {
   if (params.isHeartbeat || params.isSubagentSession || params.hasVisibleDelivery) {
     return undefined;
   }
-  const text = typeof params.yieldMessage === "string" ? params.yieldMessage.trim() : "";
+  const text =
+    typeof params.yieldAcknowledgment === "string" ? params.yieldAcknowledgment.trim() : "";
   if (!text) {
     return undefined;
   }

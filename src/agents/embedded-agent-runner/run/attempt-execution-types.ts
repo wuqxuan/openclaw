@@ -82,6 +82,7 @@ export type EmbeddedAttemptExecutionPhaseInput = {
       yieldAbortSettled: Promise<void> | null;
       yieldDetected: boolean;
       yieldMessage: string | null;
+      yieldAcknowledgment: string | null;
     };
     setToolSearchCatalogExecutor: StreamRuntimeInput["lifecycle"]["setToolSearchCatalogExecutor"];
   };

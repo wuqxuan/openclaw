@@ -40,7 +40,7 @@ type McpLoopbackScopeParams = {
   modelProvider?: string;
   modelId?: string;
   yieldContextCacheKey?: string;
-  onYield?: (message: string) => Promise<void> | void;
+  onYield?: (message: string, acknowledgment?: string) => Promise<void> | void;
   messageProvider: string | undefined;
   clientCaps?: string[];
   currentChannelId: string | undefined;

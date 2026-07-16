@@ -172,10 +172,11 @@ export type EmbeddedAgentRunMeta = {
   terminalReplyKind?: "silent-empty";
   yielded?: boolean;
   /**
-   * User-facing acknowledgment from sessions_yield for this attempt only.
+   * Explicit user-facing acknowledgment from sessions_yield.acknowledgment.
    * Reply pipeline may emit this when the turn has no other visible payload.
+   * Hidden `message` context is never exposed here.
    */
-  yieldMessage?: string;
+  yieldAcknowledgment?: string;
   error?: {
     kind:
       | "context_overflow"

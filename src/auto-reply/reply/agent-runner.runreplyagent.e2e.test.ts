@@ -1952,12 +1952,12 @@ describe("runReplyAgent typing (heartbeat)", () => {
     await expect(run()).resolves.toBeUndefined();
   });
 
-  it("delivers sessions_yield message when the turn has no other visible payload", async () => {
+  it("delivers sessions_yield acknowledgment when the turn has no other visible payload", async () => {
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [],
       meta: {
         yielded: true,
-        yieldMessage: "Research started, I'll send results shortly",
+        yieldAcknowledgment: "Research started, I'll send results shortly",
       },
     });
     const { run } = createMinimalRun();
@@ -1966,6 +1966,20 @@ describe("runReplyAgent typing (heartbeat)", () => {
 
     expect(payloads).toHaveLength(1);
     expect(payloads[0]?.text).toBe("Research started, I'll send results shortly");
+  });
+
+  it("keeps hidden sessions_yield message silent without an explicit acknowledgment", async () => {
+    // Regression: yielded with only the shipped hidden-message contract must
+    // not synthesize user-visible text from that field.
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      meta: {
+        yielded: true,
+      },
+    });
+    const { run } = createMinimalRun();
+
+    await expect(run()).resolves.toBeUndefined();
   });
 
   it.each([

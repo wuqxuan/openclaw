@@ -32,13 +32,13 @@ describe("sessions_yield orchestration", () => {
   it("parent session is idle after yield — end_turn, no pendingToolCalls", async () => {
     const sessionId = "yield-parent-session";
 
-    // Simulate an attempt where sessions_yield was called
+    // Simulate an attempt where sessions_yield was called with an explicit ack
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         promptError: null,
         sessionIdUsed: sessionId,
         yieldDetected: true,
-        yieldMessage: "Research started, I'll send results shortly",
+        yieldAcknowledgment: "Research started, I'll send results shortly",
       }),
     );
 
@@ -54,9 +54,9 @@ describe("sessions_yield orchestration", () => {
     // 2. No pending tool calls (yield is NOT a client tool call)
     expect(result.meta.pendingToolCalls).toBeUndefined();
 
-    // 3. Yield message is carried on meta for the reply pipeline
+    // 3. Explicit acknowledgment is carried on meta for the reply pipeline
     expect(result.meta.yielded).toBe(true);
-    expect(result.meta.yieldMessage).toBe("Research started, I'll send results shortly");
+    expect(result.meta.yieldAcknowledgment).toBe("Research started, I'll send results shortly");
 
     // 4. Parent session is IDLE (not in ACTIVE_EMBEDDED_RUNS)
     expect(isEmbeddedAgentRunActive(sessionId)).toBe(false);

@@ -1881,10 +1881,11 @@ export function createFollowupRunner(params: {
         );
       let finalPayloads = resolveDeliveryPayloads(runResult.payloads ?? []);
       // Mirror agent-runner: synthesize sessions_yield ack when empty and no other delivery.
+      // Only explicit acknowledgment is eligible; hidden message is never outbound text.
       if (finalPayloads.length === 0) {
         const yieldAckPayload = resolveSessionsYieldAckPayload({
           yielded: runResult.meta?.yielded === true,
-          yieldMessage: runResult.meta?.yieldMessage,
+          yieldAcknowledgment: runResult.meta?.yieldAcknowledgment,
           isHeartbeat: opts?.isHeartbeat === true,
           isSubagentSession: isSubagentSessionKey(replySessionKey ?? run.sessionKey),
           hasVisibleDelivery: hasCommittedDelivery || hasCompletedTerminalDelivery,
