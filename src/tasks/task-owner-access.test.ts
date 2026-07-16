@@ -3,12 +3,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { captureEnv } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
+  cancelOwnedTaskRunById,
   findLatestTaskForRelatedSessionKeyForOwner,
   findTaskByRunIdForOwner,
   getTaskByIdForOwner,
   resolveTaskForLookupTokenForOwner,
 } from "./task-owner-access.js";
-import { createTaskRecord as createTaskRecordOrNull } from "./task-registry.js";
+import { createTaskRecord as createTaskRecordOrNull, getTaskById } from "./task-registry.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { resetTaskRegistryForTests } from "./task-runtime.test-helpers.js";
 
@@ -151,6 +152,34 @@ describe("task owner access", () => {
           callerOwnerKey: "agent:main:main",
         }),
       ).toBeUndefined();
+    });
+  });
+
+  it("cancelOwnedTaskRunById rejects non-owner callers without mutating the task", async () => {
+    await withTaskRegistryTempDir(async () => {
+      const task = createTaskRecord({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        childSessionKey: "agent:main:acp:child-1",
+        runId: "owner-cancel-guard-run",
+        task: "Protected acp task",
+        status: "running",
+      });
+
+      const result = await cancelOwnedTaskRunById({
+        cfg: {} as never,
+        taskId: task.taskId,
+        callerOwnerKey: "agent:main:subagent:other-parent",
+        reason: "owner-stopped",
+      });
+
+      expect(result).toEqual({
+        found: false,
+        cancelled: false,
+        reason: "Task not found.",
+      });
+      expect(getTaskById(task.taskId)?.status).toBe("running");
     });
   });
 });

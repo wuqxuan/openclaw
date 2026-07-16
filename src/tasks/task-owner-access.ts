@@ -1,6 +1,8 @@
 // Normalizes task owner keys and checks requester access to task records.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
+  cancelTaskById,
   findTaskByRunId,
   getTaskById,
   listTasksForOwnerKey,
@@ -77,6 +79,31 @@ export function cancelTaskByIdForOwner(params: {
     status: "cancelled",
     endedAt: params.endedAt,
     terminalSummary: params.terminalSummary,
+  });
+}
+
+/**
+ * Cancel an owner-visible task through the canonical task cancellation path
+ * (runtime controller + durable terminal state + delivery coordination).
+ * Distinct from cancelTaskByIdForOwner, which only marks the record terminal.
+ */
+export async function cancelOwnedTaskRunById(params: {
+  cfg: OpenClawConfig;
+  taskId: string;
+  callerOwnerKey: string;
+  reason?: string;
+}): Promise<{ found: boolean; cancelled: boolean; reason?: string; task?: TaskRecord }> {
+  const task = getTaskByIdForOwner({
+    taskId: params.taskId,
+    callerOwnerKey: params.callerOwnerKey,
+  });
+  if (!task) {
+    return { found: false, cancelled: false, reason: "Task not found." };
+  }
+  return cancelTaskById({
+    cfg: params.cfg,
+    taskId: task.taskId,
+    reason: params.reason,
   });
 }
 

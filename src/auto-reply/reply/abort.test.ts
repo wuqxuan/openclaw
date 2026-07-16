@@ -102,6 +102,19 @@ const taskRegistryMocks = vi.hoisted(() => ({
         createdAt: number;
       }>,
   ),
+  cancelOwnedTaskRunById: vi.fn(
+    async (params: { cfg: unknown; taskId: string; callerOwnerKey: string; reason?: string }) => ({
+      found: true,
+      cancelled: true,
+      task: {
+        taskId: params.taskId,
+        status: "cancelled",
+        error: params.reason ?? "owner-stopped",
+        runtime: "acp",
+        ownerKey: params.callerOwnerKey,
+      },
+    }),
+  ),
   isTerminalTaskStatus: vi.fn((status: string) =>
     ["succeeded", "failed", "timed_out", "lost", "cancelled"].includes(status),
   ),
@@ -109,6 +122,7 @@ const taskRegistryMocks = vi.hoisted(() => ({
 
 vi.mock("../../tasks/task-owner-access.js", () => ({
   listTasksForOwnerKey: taskRegistryMocks.listTasksForOwnerKey,
+  cancelOwnedTaskRunById: taskRegistryMocks.cancelOwnedTaskRunById,
 }));
 
 vi.mock("../../tasks/task-executor-policy.js", () => ({
@@ -286,6 +300,27 @@ describe("abort detection", () => {
     commandQueueMocks.clearCommandLane.mockClear().mockReturnValue(1);
     acpManagerMocks.resolveSession.mockReset().mockReturnValue({ kind: "none" });
     acpManagerMocks.cancelSession.mockReset().mockResolvedValue(undefined);
+    taskRegistryMocks.listTasksForOwnerKey.mockReset().mockReturnValue([]);
+    taskRegistryMocks.cancelOwnedTaskRunById
+      .mockReset()
+      .mockImplementation(
+        async (params: {
+          cfg: unknown;
+          taskId: string;
+          callerOwnerKey: string;
+          reason?: string;
+        }) => ({
+          found: true,
+          cancelled: true,
+          task: {
+            taskId: params.taskId,
+            status: "cancelled",
+            error: params.reason ?? "owner-stopped",
+            runtime: "acp",
+            ownerKey: params.callerOwnerKey,
+          },
+        }),
+      );
     runtimeAbortMocks.abortEmbeddedAgentRun.mockReset().mockReturnValue(true);
     runtimeAbortMocks.resolveActiveEmbeddedRunSessionId.mockReset().mockReturnValue(undefined);
     subagentRegistryMocks.getLatestSubagentRunByChildSessionKey.mockReset().mockReturnValue(null);
@@ -1245,7 +1280,7 @@ describe("abort detection", () => {
     expectSessionLaneCleared(childKey);
   });
 
-  it("continues stopping siblings when one termination persistence write fails", () => {
+  it("continues stopping siblings when one termination persistence write fails", async () => {
     subagentRegistryMocks.markSubagentRunTerminated.mockClear();
     const sessionKey = "telegram:persistence-failure-parent";
     const firstChildKey = "agent:main:subagent:persistence-failure-first";
@@ -1271,12 +1306,12 @@ describe("abort detection", () => {
       })
       .mockReturnValue(1);
 
-    expect(
+    await expect(
       stopSubagentsForRequester({
         cfg: {} as OpenClawConfig,
         requesterSessionKey: sessionKey,
       }),
-    ).toEqual({ stopped: 2 });
+    ).resolves.toEqual({ stopped: 2 });
     expect(subagentRegistryMocks.markSubagentRunTerminated).toHaveBeenCalledTimes(2);
     expectSessionLaneCleared(firstChildKey);
     expectSessionLaneCleared(secondChildKey);
@@ -1338,7 +1373,7 @@ describe("abort detection", () => {
     expectSessionLaneCleared(depth2Key);
   });
 
-  it("stops a subagent that is paused after yielding", () => {
+  it("stops a subagent that is paused after yielding", async () => {
     subagentRegistryMocks.listSubagentRunsForRequester.mockClear();
     subagentRegistryMocks.markSubagentRunTerminated.mockClear();
     const sessionKey = "telegram:yield-parent";
@@ -1360,7 +1395,7 @@ describe("abort detection", () => {
       ])
       .mockReturnValueOnce([]);
 
-    const result = stopSubagentsForRequester({
+    const result = await stopSubagentsForRequester({
       cfg: {} as OpenClawConfig,
       requesterSessionKey: sessionKey,
     });
@@ -1550,7 +1585,7 @@ describe("abort detection", () => {
     expect(terminatedRun.childSessionKey).toBe(depth2Key);
   });
 
-  it("stopSubagentsForRequester does not traverse a child that moved to a newer parent", () => {
+  it("stopSubagentsForRequester does not traverse a child that moved to a newer parent", async () => {
     subagentRegistryMocks.listSubagentRunsForRequester.mockClear();
     subagentRegistryMocks.markSubagentRunTerminated.mockClear();
     const oldParentKey = "agent:main:subagent:old-parent";
@@ -1614,7 +1649,7 @@ describe("abort detection", () => {
       return null;
     });
 
-    const result = stopSubagentsForRequester({
+    const result = await stopSubagentsForRequester({
       cfg: {} as OpenClawConfig,
       requesterSessionKey: oldParentKey,
     });
@@ -1625,7 +1660,7 @@ describe("abort detection", () => {
 
   it("stopSubagentsForRequester cancels active ACP detached tasks not in the subagent registry", async () => {
     subagentRegistryMocks.listSubagentRunsForRequester.mockReset().mockReturnValue([]);
-    acpManagerMocks.cancelSession.mockClear();
+    taskRegistryMocks.cancelOwnedTaskRunById.mockClear();
     taskRegistryMocks.listTasksForOwnerKey.mockReset().mockReturnValueOnce([
       {
         taskId: "task-acp-1",
@@ -1642,18 +1677,16 @@ describe("abort detection", () => {
       },
     ]);
 
-    const result = stopSubagentsForRequester({
+    const result = await stopSubagentsForRequester({
       cfg: {} as OpenClawConfig,
       requesterSessionKey: "telegram:owner",
     });
 
     expect(result).toEqual({ stopped: 1 });
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
+    expect(taskRegistryMocks.cancelOwnedTaskRunById).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: "acp:session:orphan-1",
+        taskId: "task-acp-1",
+        callerOwnerKey: "telegram:owner",
         reason: "owner-stopped",
       }),
     );
@@ -1676,7 +1709,7 @@ describe("abort detection", () => {
         createdAt: now,
       },
     ]);
-    acpManagerMocks.cancelSession.mockClear();
+    taskRegistryMocks.cancelOwnedTaskRunById.mockClear();
     taskRegistryMocks.listTasksForOwnerKey.mockReset().mockReturnValueOnce([
       {
         taskId: "task-terminal",
@@ -1706,18 +1739,15 @@ describe("abort detection", () => {
       },
     ]);
 
-    const result = stopSubagentsForRequester({
+    const result = await stopSubagentsForRequester({
       cfg: {} as OpenClawConfig,
       requesterSessionKey: "telegram:owner",
     });
 
     expect(result.stopped).toBeGreaterThanOrEqual(1);
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledTimes(1);
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: activeAcpKey }),
+    expect(taskRegistryMocks.cancelOwnedTaskRunById).toHaveBeenCalledTimes(1);
+    expect(taskRegistryMocks.cancelOwnedTaskRunById).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: "task-active", reason: "owner-stopped" }),
     );
   });
 
@@ -1737,7 +1767,7 @@ describe("abort detection", () => {
         endedAt: now - 1_000,
       },
     ]);
-    acpManagerMocks.cancelSession.mockClear();
+    taskRegistryMocks.cancelOwnedTaskRunById.mockClear();
     taskRegistryMocks.listTasksForOwnerKey.mockReset().mockReturnValueOnce([
       {
         taskId: "task-active",
@@ -1754,19 +1784,51 @@ describe("abort detection", () => {
       },
     ]);
 
-    const result = stopSubagentsForRequester({
+    const result = await stopSubagentsForRequester({
       cfg: {} as OpenClawConfig,
       requesterSessionKey: "telegram:owner",
     });
 
     expect(result.stopped).toBe(1);
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledTimes(1);
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: sharedChildKey }),
+    expect(taskRegistryMocks.cancelOwnedTaskRunById).toHaveBeenCalledTimes(1);
+    expect(taskRegistryMocks.cancelOwnedTaskRunById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-active",
+        reason: "owner-stopped",
+      }),
     );
+  });
+
+  it("stopSubagentsForRequester does not count ACP tasks when lifecycle cancel fails", async () => {
+    subagentRegistryMocks.listSubagentRunsForRequester.mockReset().mockReturnValue([]);
+    taskRegistryMocks.cancelOwnedTaskRunById.mockClear().mockResolvedValueOnce({
+      found: true,
+      cancelled: false,
+      reason: "Task is already terminal.",
+    });
+    taskRegistryMocks.listTasksForOwnerKey.mockReset().mockReturnValueOnce([
+      {
+        taskId: "task-stale",
+        runtime: "acp",
+        status: "running",
+        childSessionKey: "acp:session:stale",
+        ownerKey: "telegram:owner",
+        task: "stale acp task",
+        requesterSessionKey: "telegram:owner",
+        scopeKind: "session",
+        deliveryStatus: "pending",
+        notifyPolicy: "default",
+        createdAt: Date.now() - 1_000,
+      },
+    ]);
+
+    const result = await stopSubagentsForRequester({
+      cfg: {} as OpenClawConfig,
+      requesterSessionKey: "telegram:owner",
+    });
+
+    expect(result).toEqual({ stopped: 0 });
+    expect(taskRegistryMocks.cancelOwnedTaskRunById).toHaveBeenCalledTimes(1);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

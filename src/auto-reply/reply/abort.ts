@@ -33,7 +33,7 @@ import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isAcpSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import { isTerminalTaskStatus } from "../../tasks/task-executor-policy.js";
-import { listTasksForOwnerKey } from "../../tasks/task-owner-access.js";
+import { cancelOwnedTaskRunById, listTasksForOwnerKey } from "../../tasks/task-owner-access.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import {
@@ -60,6 +60,7 @@ const defaultAbortDeps = {
   listSubagentRunsForController,
   markSubagentRunTerminated,
   listTasksForOwnerKey,
+  cancelOwnedTaskRunById,
   isTerminalTaskStatus,
 };
 
@@ -88,6 +89,8 @@ export const testing = {
       deps?.markSubagentRunTerminated ?? defaultAbortDeps.markSubagentRunTerminated;
     abortDeps.listTasksForOwnerKey =
       deps?.listTasksForOwnerKey ?? defaultAbortDeps.listTasksForOwnerKey;
+    abortDeps.cancelOwnedTaskRunById =
+      deps?.cancelOwnedTaskRunById ?? defaultAbortDeps.cancelOwnedTaskRunById;
     abortDeps.isTerminalTaskStatus =
       deps?.isTerminalTaskStatus ?? defaultAbortDeps.isTerminalTaskStatus;
   },
@@ -103,6 +106,7 @@ export const testing = {
     abortDeps.listSubagentRunsForController = defaultAbortDeps.listSubagentRunsForController;
     abortDeps.markSubagentRunTerminated = defaultAbortDeps.markSubagentRunTerminated;
     abortDeps.listTasksForOwnerKey = defaultAbortDeps.listTasksForOwnerKey;
+    abortDeps.cancelOwnedTaskRunById = defaultAbortDeps.cancelOwnedTaskRunById;
     abortDeps.isTerminalTaskStatus = defaultAbortDeps.isTerminalTaskStatus;
   },
 };
@@ -224,10 +228,10 @@ function markSubagentRunTerminatedBestEffort(
   }
 }
 
-export function stopSubagentsForRequester(params: {
+export async function stopSubagentsForRequester(params: {
   cfg: OpenClawConfig;
   requesterSessionKey?: string;
-}): { stopped: number } {
+}): Promise<{ stopped: number }> {
   const requesterKey = normalizeRequesterSessionKey(params.cfg, params.requesterSessionKey);
   if (!requesterKey) {
     return { stopped: 0 };
@@ -308,7 +312,7 @@ export function stopSubagentsForRequester(params: {
     }
 
     // Cascade: also stop any sub-sub-agents spawned by this child.
-    const cascadeResult = stopSubagentsForRequester({
+    const cascadeResult = await stopSubagentsForRequester({
       cfg: params.cfg,
       requesterSessionKey: childKey,
     });
@@ -316,8 +320,8 @@ export function stopSubagentsForRequester(params: {
   }
 
   // ACP spawns create owner-scoped task records, not subagent-registry runs.
-  // Cancel non-terminal ACP children that the subagent walk did not already cover.
-  // Cancel is fire-and-forget: AcpSessionManager owns mode-aware process cleanup.
+  // Route non-terminal ACP children through the canonical task cancellation
+  // lifecycle so durable state, flow abort, and delivery stay coordinated.
   for (const task of abortDeps.listTasksForOwnerKey(requesterKey)) {
     const childKey = normalizeOptionalString(task.childSessionKey);
     if (
@@ -329,15 +333,25 @@ export function stopSubagentsForRequester(params: {
       continue;
     }
     seenChildKeys.add(childKey);
-    stopped += 1;
-    abortDeps
-      .getAcpSessionManager()
-      .cancelSession({ cfg: params.cfg, sessionKey: childKey, reason: "owner-stopped" })
-      .catch((err: unknown) => {
-        logVerbose(
-          `abort: failed to cancel ACP task ${task.taskId} for ${requesterKey}: ${formatErrorMessage(err)}`,
-        );
+    try {
+      const cancelResult = await abortDeps.cancelOwnedTaskRunById({
+        cfg: params.cfg,
+        taskId: task.taskId,
+        callerOwnerKey: requesterKey,
+        reason: "owner-stopped",
       });
+      if (cancelResult.cancelled) {
+        stopped += 1;
+      } else {
+        logVerbose(
+          `abort: ACP task ${task.taskId} for ${requesterKey} not cancelled: ${cancelResult.reason ?? "unknown"}`,
+        );
+      }
+    } catch (err: unknown) {
+      logVerbose(
+        `abort: failed to cancel ACP task ${task.taskId} for ${requesterKey}: ${formatErrorMessage(err)}`,
+      );
+    }
   }
 
   if (stopped > 0) {
@@ -498,7 +512,7 @@ export async function tryFastAbortFromMessage(params: {
         `abort: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
       );
     }
-    const { stopped } = stopSubagentsForRequester({ cfg, requesterSessionKey });
+    const { stopped } = await stopSubagentsForRequester({ cfg, requesterSessionKey });
     if (activeAbortRejected && !aborted) {
       return {
         handled: true,
@@ -539,6 +553,6 @@ export async function tryFastAbortFromMessage(params: {
   if (abortKey) {
     setAbortMemory(abortKey, true);
   }
-  const { stopped } = stopSubagentsForRequester({ cfg, requesterSessionKey });
+  const { stopped } = await stopSubagentsForRequester({ cfg, requesterSessionKey });
   return { handled: true, aborted: false, stoppedSubagents: stopped };
 }
