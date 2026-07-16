@@ -94,7 +94,11 @@ describe("openai transport stream", () => {
     );
 
     expect(output.content).toEqual([
-      { type: "text", text: "before  after" },
+      {
+        type: "text",
+        text: "before  after",
+        textSignature: JSON.stringify({ v: 1, id: "chatcmpl-test", phase: "commentary" }),
+      },
       {
         type: "toolCall",
         id: "call_native_1",
@@ -133,7 +137,11 @@ describe("openai transport stream", () => {
     );
 
     expect(output.content).toEqual([
-      { type: "text", text: "I'll check" },
+      {
+        type: "text",
+        text: "I'll check",
+        textSignature: JSON.stringify({ v: 1, id: "chatcmpl-test", phase: "commentary" }),
+      },
       {
         type: "toolCall",
         id: "call_native_1",
@@ -181,7 +189,11 @@ describe("openai transport stream", () => {
         arguments: { path: "/tmp/native.md" },
         partialArgs: '{"path":"/tmp/native.md"}',
       },
-      { type: "text", text: " visible" },
+      {
+        type: "text",
+        text: " visible",
+        textSignature: JSON.stringify({ v: 1, id: "chatcmpl-test", phase: "commentary" }),
+      },
     ]);
     expect(JSON.stringify(events)).not.toContain("DSML");
   });
@@ -217,7 +229,11 @@ describe("openai transport stream", () => {
     );
 
     expect(output.content).toEqual([
-      { type: "text", text: "before " },
+      {
+        type: "text",
+        text: "before ",
+        textSignature: JSON.stringify({ v: 1, id: "chatcmpl-test", phase: "commentary" }),
+      },
       {
         type: "toolCall",
         id: "call_native_1",
@@ -225,7 +241,11 @@ describe("openai transport stream", () => {
         arguments: { path: "/tmp/native.md" },
         partialArgs: '{"path":"/tmp/native.md"}',
       },
-      { type: "text", text: " after" },
+      {
+        type: "text",
+        text: " after",
+        textSignature: JSON.stringify({ v: 1, id: "chatcmpl-test", phase: "commentary" }),
+      },
     ]);
     expect(JSON.stringify(events)).not.toContain("DSML");
   });

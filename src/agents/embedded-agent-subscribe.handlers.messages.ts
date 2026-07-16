@@ -1089,6 +1089,18 @@ export function handleMessageUpdate(
       // An unphased equal/shrinking Responses item can end without a delta.
       // Rebuild its block buffer from the scoped snapshot after the boundary reset.
       appendBlockReplyChunk(ctx, cleanedText);
+    } else if (
+      // Completions deltas were buffered until text_end classification. When
+      // text_end stays unphased (normal final answer), release the accumulated
+      // visible text so onBlockReply fires at the text_end boundary instead of
+      // relying only on the later message_end safety path.
+      evtType === "text_end" &&
+      !deliveryPhase &&
+      isOpenAiCompletionsAssistantMessage(partialAssistant) &&
+      !ctx.state.lastBlockReplyText &&
+      cleanedText
+    ) {
+      replaceBlockReplyBuffer(ctx, cleanedText);
     }
 
     ctx.state.lastStreamedAssistant = nextRawStreamText;

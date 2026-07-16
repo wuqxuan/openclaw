@@ -151,4 +151,35 @@ describe("subscribeEmbeddedAgentSession — Anthropic pre-tool narration", () =>
     });
     expect(postedBlockReplyText(onBlockReply)).toContain("Here is the full answer.");
   });
+
+  it("still delivers a non-tool OpenAI Completions final answer on text_end", async () => {
+    const { session, emit } = createStubSessionHarness();
+    const onBlockReply = vi.fn();
+    subscribeEmbeddedAgentSession({
+      session: session as unknown as Parameters<typeof subscribeEmbeddedAgentSession>[0]["session"],
+      runId: "run-completions-answer",
+      onBlockReply,
+      blockReplyBreak: "text_end",
+    });
+
+    // Unphased Completions deltas are buffered until text_end; a normal final
+    // answer (no tool-use phase) must still reach onBlockReply at text_end.
+    const answer = "Here is the Completions final answer.";
+    emit({ type: "message_start", message: openAiCompletionsAssistant("") });
+    emit({
+      type: "message_update",
+      message: openAiCompletionsAssistant(answer),
+      assistantMessageEvent: { type: "text_delta", delta: answer },
+    });
+    emit({
+      type: "message_update",
+      message: openAiCompletionsAssistant(answer),
+      assistantMessageEvent: { type: "text_end", contentIndex: 0 },
+    });
+
+    await vi.waitFor(() => {
+      expect(onBlockReply).toHaveBeenCalled();
+    });
+    expect(postedBlockReplyText(onBlockReply)).toContain("Here is the Completions final answer.");
+  });
 });
