@@ -113,4 +113,58 @@ describe("command resolveSession provider-owned daily reset", () => {
     expect(result.isNewSession).toBe(false);
     expect(result.sessionId).toBe("locked-session-id");
   });
+
+  it("exposes stored thinking and verbose preferences when the session is still fresh", () => {
+    const sessionKey = "agent:main:cli";
+    const now = Date.now();
+    hoisted.store = {
+      [sessionKey]: {
+        sessionId: "active-session-id",
+        updatedAt: now,
+        sessionStartedAt: now,
+        lastInteractionAt: now,
+        thinkingLevel: "high",
+        verboseLevel: "on",
+      },
+    };
+
+    const result = resolveSession({
+      cfg: { session: {} } as OpenClawConfig,
+      sessionKey,
+      agentId: "main",
+    });
+
+    expect(result.isNewSession).toBe(false);
+    expect(result.sessionId).toBe("active-session-id");
+    expect(result.persistedThinking).toBe("high");
+    expect(result.persistedVerbose).toBe("on");
+  });
+
+  it("keeps stored thinking and verbose preferences when lifecycle marks the session not fresh", () => {
+    const sessionKey = "agent:main:cli";
+    const startedAt = Date.now() - DAY_MS;
+    hoisted.store = {
+      [sessionKey]: {
+        sessionId: "stale-session-id",
+        updatedAt: startedAt,
+        sessionStartedAt: startedAt,
+        lastInteractionAt: startedAt,
+        thinkingLevel: "high",
+        verboseLevel: "full",
+      },
+    };
+    // Forces !fresh without model lock: same path as terminal transcript ahead of registry.
+    hoisted.terminalTranscriptNewer = true;
+
+    const result = resolveSession({
+      cfg: { session: {} } as OpenClawConfig,
+      sessionKey,
+      agentId: "main",
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.sessionId).not.toBe("stale-session-id");
+    expect(result.persistedThinking).toBe("high");
+    expect(result.persistedVerbose).toBe("full");
+  });
 });

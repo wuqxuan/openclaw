@@ -456,14 +456,16 @@ export function resolveSession(opts: {
     previousSessionId: isNewSession ? sessionEntry?.sessionId : undefined,
   });
 
-  const persistedThinking =
-    fresh && sessionEntry?.thinkingLevel
-      ? normalizeThinkLevel(sessionEntry.thinkingLevel)
-      : undefined;
-  const persistedVerbose =
-    fresh && sessionEntry?.verboseLevel
-      ? normalizeVerboseLevel(sessionEntry.verboseLevel)
-      : undefined;
+  // Session lifecycle uses `fresh` for rollover / sessionId reuse only.
+  // Stored /think and /verbose preferences must still apply on every turn
+  // while the entry remains in the store (including after implicit rotation
+  // or when a terminal transcript is newer than the registry snapshot).
+  const persistedThinking = sessionEntry?.thinkingLevel
+    ? normalizeThinkLevel(sessionEntry.thinkingLevel)
+    : undefined;
+  const persistedVerbose = sessionEntry?.verboseLevel
+    ? normalizeVerboseLevel(sessionEntry.verboseLevel)
+    : undefined;
 
   return {
     sessionId,
