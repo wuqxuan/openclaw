@@ -25,6 +25,10 @@ import {
   isMissingOperatorReadScopeError,
 } from "../../lib/gateway-errors.ts";
 import { buildSessionUsageDateParams, requestSessionsUsage } from "../../lib/sessions/index.ts";
+import {
+  isDocumentVisible,
+  shouldRefreshUsageOnReconnect,
+} from "../../lib/usage-reconnect-refresh.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import "../../styles/profile.css";
 import {
@@ -106,6 +110,8 @@ export class ProfilePage extends OpenClawLightDomElement {
   private requestId = 0;
   private refreshTimer: number | null = null;
   private refreshAttempts = 0;
+  /** Wall time of the last retained profile usage/cost payload. */
+  private profileLoadedAtMs: number | null = null;
   private subscriptions: Array<() => void> = [];
 
   override connectedCallback() {
@@ -144,6 +150,7 @@ export class ProfilePage extends OpenClawLightDomElement {
       this.costSummary = null;
       this.sessionsResult = null;
       this.error = null;
+      this.profileLoadedAtMs = null;
     }
     if (!snapshot.connected || !snapshot.client) {
       this.requestId += 1;
@@ -156,7 +163,25 @@ export class ProfilePage extends OpenClawLightDomElement {
         void this.context.agentIdentity.ensure([list.defaultId]);
       }
     });
-    if (clientChanged || becameConnected || (!this.costSummary && !this.loading && !this.error)) {
+    // First connect / missing payload still loads. Pure reconnect reuses retained
+    // cost/usage unless stale and the tab is visible (same policy as Usage page).
+    if (clientChanged) {
+      void this.loadProfile();
+      return;
+    }
+    if (!this.costSummary && !this.loading && !this.error) {
+      void this.loadProfile();
+      return;
+    }
+    if (
+      becameConnected &&
+      shouldRefreshUsageOnReconnect({
+        hasRetainedData: Boolean(this.costSummary || this.sessionsResult || this.error),
+        loadedAtMs: this.profileLoadedAtMs,
+        nowMs: Date.now(),
+        visible: isDocumentVisible(),
+      })
+    ) {
       void this.loadProfile();
     }
   }
@@ -193,12 +218,14 @@ export class ProfilePage extends OpenClawLightDomElement {
       }
       this.costSummary = costSummary;
       this.sessionsResult = sessionsResult;
+      this.profileLoadedAtMs = Date.now();
       this.scheduleCacheSettleRefresh();
     } catch (error) {
       if (requestId !== this.requestId) {
         return;
       }
       this.error = toErrorMessage(error);
+      this.profileLoadedAtMs = Date.now();
     } finally {
       if (requestId === this.requestId) {
         this.loading = false;

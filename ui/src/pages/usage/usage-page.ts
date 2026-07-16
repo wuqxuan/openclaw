@@ -26,6 +26,10 @@ import {
   requestSessionUsageTimeSeries,
 } from "../../lib/sessions/index.ts";
 import { normalizeLowercaseStringOrEmpty } from "../../lib/string-coerce.ts";
+import {
+  isDocumentVisible,
+  shouldRefreshUsageOnReconnect,
+} from "../../lib/usage-reconnect-refresh.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { mergeUsageCacheStatus } from "./cache-status.ts";
@@ -117,6 +121,8 @@ class UsagePage extends OpenClawLightDomElement {
   private routeDataEnabled = true;
   private hasBoundGatewaySource = false;
   private observedAgentScopeId: string | null | undefined;
+  /** Wall time of the last retained usage/cost payload (route data or load). */
+  private usageLoadedAtMs: number | null = null;
   private readonly subscriptions = new SubscriptionsController(this)
     .effect(
       () => this.context?.gateway,
@@ -183,7 +189,25 @@ class UsagePage extends OpenClawLightDomElement {
     }
 
     void this.context.agents.ensureList();
-    if (this.routeDataInitialized && (clientChanged || becameConnected)) {
+    if (!this.routeDataInitialized) {
+      return;
+    }
+    // Client identity/source changes still force a full reload after reset.
+    // Pure reconnect reuses retained usage unless the payload is stale and the
+    // tab is visible — otherwise idle proxy drops re-scan the gateway every minute.
+    if (clientChanged) {
+      void this.loadUsage();
+      return;
+    }
+    if (
+      becameConnected &&
+      shouldRefreshUsageOnReconnect({
+        hasRetainedData: Boolean(this.usageResult || this.usageCostSummary || this.usageError),
+        loadedAtMs: this.usageLoadedAtMs,
+        nowMs: Date.now(),
+        visible: isDocumentVisible(),
+      })
+    ) {
       void this.loadUsage();
     }
   }
@@ -226,6 +250,9 @@ class UsagePage extends OpenClawLightDomElement {
     this.providerUsageSummary = data.providerUsageSummary;
     this.usageError = data.error;
     this.usageLoading = false;
+    if (data.result || data.costSummary || data.error) {
+      this.usageLoadedAtMs = Date.now();
+    }
   }
 
   private ensureInitialData() {
@@ -251,6 +278,7 @@ class UsagePage extends OpenClawLightDomElement {
     this.usageCostSummary = null;
     this.providerUsageSummary = null;
     this.usageError = null;
+    this.usageLoadedAtMs = null;
     this.usageAgentId = this.context.agentSelection.state.scopeId;
     this.clearSelectionsAndDetails();
   }
@@ -331,6 +359,7 @@ class UsagePage extends OpenClawLightDomElement {
       this.usageResult = sessionsResult;
       this.usageCostSummary = costSummary;
       this.providerUsageSummary = providerUsageSummary;
+      this.usageLoadedAtMs = Date.now();
     } catch (error) {
       if (!this.isCurrentRequest(requestId, client)) {
         return;
@@ -342,6 +371,7 @@ class UsagePage extends OpenClawLightDomElement {
       } else {
         this.usageError = toUsageErrorMessage(error);
       }
+      this.usageLoadedAtMs = Date.now();
     } finally {
       if (this.isCurrentRequest(requestId, client)) {
         this.usageLoading = false;
