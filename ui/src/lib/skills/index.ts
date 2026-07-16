@@ -463,7 +463,12 @@ export async function loadSkillCard(state: SkillsState, skillKey: string) {
   }
 }
 
-async function loadClawHubSecurityVerdicts(state: SkillsState, report: SkillStatusReport) {
+/**
+ * Load bulk ClawHub security verdicts for linked skills in a status report.
+ * Call this after route-preloaded `skills.status` so first paint does not leave
+ * the security badge stuck on Unavailable while agents/report already exist.
+ */
+export async function loadClawHubSecurityVerdicts(state: SkillsState, report: SkillStatusReport) {
   const client = state.client;
   const agentScope = captureSkillsAgentScope(state);
   if (!client || !state.connected || !reportHasLinkedClawHubSkills(report)) {

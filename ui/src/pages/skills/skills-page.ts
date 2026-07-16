@@ -16,6 +16,7 @@ import {
   installFromClawHub,
   installSkill,
   loadClawHubDetail,
+  loadClawHubSecurityVerdicts,
   loadSkillCard,
   loadSkills,
   refreshSkills,
@@ -95,6 +96,8 @@ class SkillsPage extends OpenClawLightDomElement {
   private clawhubSearchTimer: ReturnType<typeof setTimeout> | null = null;
   private routeDataInitialized = false;
   private routeDataEnabled = true;
+  /** True after a hydrate attempt for the current skills report/source epoch. */
+  private clawhubVerdictsHydrated = false;
   private hasBoundGatewaySource = false;
   private sourceGeneration = 0;
   private readonly subscriptions = new SubscriptionsController(this)
@@ -197,6 +200,7 @@ class SkillsPage extends OpenClawLightDomElement {
     this.clawhubVerdicts = {};
     this.clawhubVerdictsLoading = false;
     this.clawhubVerdictsError = null;
+    this.clawhubVerdictsHydrated = false;
     this.skillCardContents = {};
     this.skillCardContentKeys = {};
     this.skillCardLoadingKey = null;
@@ -232,6 +236,24 @@ class SkillsPage extends OpenClawLightDomElement {
     this.skillsLoading = false;
     this.skillsReport = data.report;
     this.skillsError = data.error;
+    // Route data supplies skills.status only; security verdicts still need a
+    // separate hydrate so linked ClawHub skills are not stuck on Unavailable.
+    this.clawhubVerdictsHydrated = false;
+  }
+
+  /**
+   * Route loader + ensureInitialData used to stop after agents/report were
+   * present, which skipped loadSkills and left clawhubVerdicts empty forever.
+   */
+  private hydrateSecurityVerdictsIfNeeded() {
+    if (!this.connected || !this.client || !this.skillsReport) {
+      return;
+    }
+    if (this.clawhubVerdictsLoading || this.clawhubVerdictsHydrated) {
+      return;
+    }
+    this.clawhubVerdictsHydrated = true;
+    void loadClawHubSecurityVerdicts(this, this.skillsReport);
   }
 
   private ensureInitialData() {
@@ -242,6 +264,7 @@ class SkillsPage extends OpenClawLightDomElement {
       this.routeDataEnabled &&
       (this.routeData?.agentsList || this.routeData?.report || this.routeData?.error)
     ) {
+      this.hydrateSecurityVerdictsIfNeeded();
       return;
     }
     if (!this.agentsList && !this.agentsLoading) {
@@ -317,6 +340,7 @@ class SkillsPage extends OpenClawLightDomElement {
     if (previousAgentId !== this.skillsAgentId) {
       this.skillsDetailKey = null;
       this.skillsDetailTab = "overview";
+      this.clawhubVerdictsHydrated = false;
     }
     void loadSkills(this, { clearMessages: true });
   }

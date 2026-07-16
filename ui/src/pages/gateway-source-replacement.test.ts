@@ -235,7 +235,86 @@ describe("gateway source replacement across reconnect with a reused client", () 
     await page.updateComplete;
 
     expect(page.skillsReport).toBe(report);
+    // No linked ClawHub skills → no skills.securityVerdicts request either.
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("hydrates skills.securityVerdicts when route data preloads linked skills", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "skills.securityVerdicts") {
+        return {
+          schema: "openclaw.skills.security-verdicts.v1",
+          items: [
+            {
+              registry: "https://clawhub.ai",
+              ok: true,
+              decision: "pass",
+              reasons: [],
+              requestedSlug: "agentreceipt",
+              requestedVersion: "1.2.3",
+              slug: "agentreceipt",
+              version: "1.2.3",
+              securityStatus: "clean",
+              securityPassed: true,
+            },
+          ],
+        };
+      }
+      return {};
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const agentsList = { defaultId: "main", agents: [{ id: "main" }] };
+    const context = contextWithClient(client, { connected: true, agentsList });
+    const report = {
+      skills: [
+        {
+          skillKey: "agentreceipt",
+          name: "AgentReceipt",
+          source: "workspace",
+          clawhub: {
+            status: "linked",
+            valid: true,
+            registry: "https://clawhub.ai",
+            slug: "agentreceipt",
+            installedVersion: "1.2.3",
+            installedAt: 123,
+          },
+        },
+      ],
+    } as unknown as SkillsRouteData["report"];
+    const page = createPage("openclaw-skills-page", context) as TestPage & {
+      routeData: SkillsRouteData;
+      skillsReport: SkillsRouteData["report"];
+      clawhubVerdicts: Record<string, { securityStatus?: string; decision?: string }>;
+    };
+    page.routeData = {
+      gateway: context.gateway,
+      gatewaySnapshot: context.gateway.snapshot,
+      agents: context.agents,
+      agentsList,
+      selectedAgentId: "main",
+      report,
+      error: null,
+    } as unknown as SkillsRouteData;
+
+    document.body.append(page);
+    await page.updateComplete;
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("skills.securityVerdicts", expect.anything()),
+    );
+    await vi.waitFor(() => expect(Object.keys(page.clawhubVerdicts).length).toBeGreaterThan(0));
+
+    // Route loader already provided skills.status; do not re-fetch it on first paint.
+    expect(request).not.toHaveBeenCalledWith("skills.status", expect.anything());
+    expect(page.skillsReport).toBe(report);
+    expect(page.clawhubVerdicts).toEqual(
+      expect.objectContaining({
+        "https://clawhub.ai\u0000agentreceipt\u00001.2.3": expect.objectContaining({
+          decision: "pass",
+          securityStatus: "clean",
+        }),
+      }),
+    );
   });
 
   it("rejects skills route data from an earlier same-client gateway epoch", async () => {
