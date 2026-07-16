@@ -520,6 +520,11 @@ export const streamOpenAICompletions: StreamFunction<
 
       flushPartitionedContent();
 
+      // Chat Completions only exposes the tool boundary at completion (no per-item
+      // phase). Tag non-empty pre-tool text as commentary before text_end so the
+      // delivery gate matches the Responses transport contract.
+      tagCompletionsToolUseCommentary(output);
+
       for (const block of blocks) {
         finishBlock(block);
       }
@@ -550,6 +555,9 @@ export const streamOpenAICompletions: StreamFunction<
       if (hasToolCalls && output.stopReason !== "toolUse") {
         output.content = output.content.filter((block) => block.type !== "toolCall");
       }
+      // Re-apply after stopReason promotion so late toolUse classifications still
+      // carry phase metadata on the final assistant message.
+      tagCompletionsToolUseCommentary(output);
 
       stream.push({ type: "done", reason: output.stopReason, message: output });
       stream.end();
@@ -1296,6 +1304,36 @@ function convertTools(
       },
     })),
   };
+}
+
+/**
+ * Completions has no per-item phase. When the completed turn is toolUse, mark
+ * any untagged non-empty text as commentary so channels withhold pre-tool
+ * narration the same way the Responses transport does.
+ */
+function tagCompletionsToolUseCommentary(output: AssistantMessage): void {
+  if (output.stopReason !== "toolUse") {
+    return;
+  }
+  const signatureId =
+    output.responseId ??
+    output.content.find((block) => block.type === "toolCall")?.id ??
+    "chat-completion";
+  const textSignature = JSON.stringify({
+    v: 1,
+    id: signatureId,
+    phase: "commentary",
+  });
+  for (const block of output.content) {
+    if (block.type !== "text" || block.text.trim().length === 0) {
+      continue;
+    }
+    // Preserve any existing transport-authored phase signature.
+    if (block.textSignature !== undefined) {
+      continue;
+    }
+    block.textSignature = textSignature;
+  }
 }
 
 function parseChunkUsage(

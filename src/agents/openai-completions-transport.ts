@@ -805,6 +805,29 @@ async function processOpenAICompletionsStream(
   if (hasToolCalls && output.stopReason !== "toolUse") {
     output.content = output.content.filter((block) => block.type !== "toolCall");
   }
+  // Chat Completions only exposes the tool boundary at completion. Tag
+  // untagged pre-tool text as commentary so delivery matches Responses.
+  if (output.stopReason === "toolUse") {
+    const signatureId =
+      output.responseId ??
+      output.content.find((block) => block.type === "toolCall")?.id ??
+      "chat-completion";
+    const textSignature = JSON.stringify({
+      v: 1,
+      id: signatureId,
+      phase: "commentary",
+    });
+    for (const block of output.content) {
+      if (
+        block.type === "text" &&
+        typeof block.text === "string" &&
+        block.text.trim().length > 0 &&
+        !block.textSignature
+      ) {
+        block.textSignature = textSignature;
+      }
+    }
+  }
 }
 
 type CompletionsReasoningDelta =
