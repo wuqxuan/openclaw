@@ -1314,35 +1314,43 @@ export class AcpGatewayAgent implements Agent {
     if (currentPending !== pending) {
       return;
     }
-    // Record one user-visible interruption before reject so grace-expired
-    // turns are not silent loss in the session stream / replay ledger.
+    // Claim exclusive settlement before any await so a concurrent Gateway
+    // completion cannot finishPrompt while the interruption notice is in flight.
+    const promptKey = this.pendingPromptKey(pending.sessionId, pending.idempotencyKey);
+    this.settlingPromptKeys.add(promptKey);
     try {
-      await this.sessionUpdates.emit({
-        sessionId: pending.sessionId,
-        sessionKey: pending.sessionKey,
-        ...(pending.ledgerSessionId ? { ledgerSessionId: pending.ledgerSessionId } : {}),
-        runId: pending.idempotencyKey,
-        record: true,
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: {
-            type: "text",
-            text: this.formatPendingPromptRejectionNotice(pending, error),
-          },
-        },
+      this.clearApprovalRelaysForPrompt(pending.sessionId, pending.idempotencyKey, {
+        denyActive: true,
       });
-    } catch (err) {
-      this.log(`pending prompt rejection notice failed for ${pending.sessionId}: ${String(err)}`);
+      this.pendingPrompts.delete(pending.sessionId);
+      this.sessionStore.clearActiveRun(pending.sessionId);
+      if (this.pendingPrompts.size === 0) {
+        this.clearDisconnectTimer();
+      }
+      // Record one user-visible interruption before reject so grace-expired
+      // turns are not silent loss in the session stream / replay ledger.
+      try {
+        await this.sessionUpdates.emit({
+          sessionId: pending.sessionId,
+          sessionKey: pending.sessionKey,
+          ...(pending.ledgerSessionId ? { ledgerSessionId: pending.ledgerSessionId } : {}),
+          runId: pending.idempotencyKey,
+          record: true,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: this.formatPendingPromptRejectionNotice(pending, error),
+            },
+          },
+        });
+      } catch (err) {
+        this.log(`pending prompt rejection notice failed for ${pending.sessionId}: ${String(err)}`);
+      }
+      pending.reject(error);
+    } finally {
+      this.settlingPromptKeys.delete(promptKey);
     }
-    this.clearApprovalRelaysForPrompt(pending.sessionId, pending.idempotencyKey, {
-      denyActive: true,
-    });
-    this.pendingPrompts.delete(pending.sessionId);
-    this.sessionStore.clearActiveRun(pending.sessionId);
-    if (this.pendingPrompts.size === 0) {
-      this.clearDisconnectTimer();
-    }
-    pending.reject(error);
   }
 
   private clearPendingDisconnectState(

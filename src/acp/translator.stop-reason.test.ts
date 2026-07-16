@@ -295,6 +295,91 @@ describe("acp translator stop reason mapping", () => {
     }
   });
 
+  it("does not emit interruption after concurrent completion while rejection notice is delayed", async () => {
+    vi.useFakeTimers();
+    try {
+      let runId: string | undefined;
+      const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        if (method === "chat.send") {
+          runId = params?.idempotencyKey as string | undefined;
+          return new Promise<never>(() => {});
+        }
+        return {};
+      }) as GatewayClient["request"];
+      const connection = createAcpConnection();
+      const sessionUpdate = connection["__sessionUpdateMock"];
+      let releaseInterruptionEmit: (() => void) | undefined;
+      const interruptionEmitGate = new Promise<void>((resolve) => {
+        releaseInterruptionEmit = resolve;
+      });
+      sessionUpdate.mockImplementation(async (payload: unknown) => {
+        const update = (
+          payload as { update?: { sessionUpdate?: string; content?: { text?: string } } }
+        )?.update;
+        if (
+          update?.sessionUpdate === "agent_message_chunk" &&
+          typeof update.content?.text === "string" &&
+          update.content.text.startsWith("Interrupted:")
+        ) {
+          await interruptionEmitGate;
+        }
+      });
+      const sessionStore = createInMemorySessionStore();
+      sessionStore.createSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:main",
+        cwd: "/tmp",
+      });
+      const agent = new AcpGatewayAgent(connection, createAcpGateway(request), { sessionStore });
+      const promptPromise = promptAgent(agent, "session-1");
+      const settleSpy = observeSettlement(promptPromise);
+
+      await vi.waitFor(() => {
+        expect(runId).toBeTypeOf("string");
+      });
+      sessionUpdate.mockClear();
+
+      // Start grace rejection; emit hangs so settlement ownership is claimed mid-flight.
+      agent.handleGatewayDisconnect("1006: connection lost");
+      const rejectStarted = vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => {
+        expect(sessionUpdate).toHaveBeenCalled();
+      });
+
+      // Concurrent completion arrives while the interruption emit is still pending.
+      await agent.handleGatewayEvent(
+        createChatEvent({
+          runId,
+          sessionKey: "agent:main:main",
+          seq: 1,
+          state: "final",
+        }),
+      );
+      releaseInterruptionEmit?.();
+      await rejectStarted;
+
+      await expect(promptPromise).rejects.toThrow("Gateway disconnected: 1006: connection lost");
+      expect(settleSpy).toHaveBeenCalledTimes(1);
+      expect(settleSpy.mock.calls[0]?.[0]).toMatchObject({ kind: "reject" });
+      // Exactly one interruption notice; completion must not also resolve the turn.
+      const interruptions = sessionUpdate.mock.calls
+        .map((call) => call[0])
+        .filter((payload) => {
+          const update = (
+            payload as { update?: { sessionUpdate?: string; content?: { text?: string } } }
+          )?.update;
+          return (
+            update?.sessionUpdate === "agent_message_chunk" &&
+            typeof update.content?.text === "string" &&
+            update.content.text.startsWith("Interrupted:")
+          );
+        });
+      expect(interruptions).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps pre-ack send disconnects inside the reconnect grace window", async () => {
     vi.useFakeTimers();
     try {
