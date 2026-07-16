@@ -447,6 +447,9 @@ export function createRuntimeLlm(
         options: {
           maxTokens: finiteOption(params.maxTokens),
           temperature: finiteOption(params.temperature),
+          // Forward plugin-requested reasoning so catalog-routed complete can
+          // satisfy reasoning-mandatory models (see #108255).
+          ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
           signal: params.signal,
         },
       });

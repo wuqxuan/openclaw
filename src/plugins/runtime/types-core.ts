@@ -215,6 +215,14 @@ export type LlmCompleteParams = {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Optional reasoning effort for the host simple-completion path.
+   * Uses the same level vocabulary as agent thinking / simple completion so
+   * plugins can satisfy reasoning-mandatory models without a parallel type.
+   */
+  reasoning?:
+    | import("../../auto-reply/thinking.js").ThinkLevel
+    | import("../../llm/types.js").ThinkingLevel;
   systemPrompt?: string;
   signal?: AbortSignal;
   /** Human-readable reason for audit/debug output. */

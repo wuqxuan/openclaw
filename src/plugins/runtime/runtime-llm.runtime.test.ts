@@ -591,6 +591,7 @@ describe("runtime.llm.complete", () => {
       maxTokens: 64,
       temperature: 0.2,
     });
+    expect(completionArg.options).not.toHaveProperty("reasoning");
     expectFields(requireRecord(result, "completion result"), {
       text: "done",
       provider: "openai",
@@ -613,6 +614,34 @@ describe("runtime.llm.complete", () => {
       },
     );
     expectFields(requireRecord(logPayload.usage, "log usage"), { costUsd: 0.0042 });
+  });
+
+  it("forwards optional reasoning into the host simple-completion options", async () => {
+    const logger = createLogger();
+    const llm = createRuntimeLlm({
+      getConfig: () => cfg,
+      logger,
+      authority: {
+        caller: { kind: "host", id: "runtime-test" },
+        allowComplete: true,
+      },
+    });
+
+    await llm.complete({
+      messages: [{ role: "user", content: "Think carefully." }],
+      purpose: "test-reasoning",
+      reasoning: "high",
+    });
+
+    const completionArg = expectSingleCallFirstArg(
+      hoisted.completeWithPreparedSimpleCompletionModel,
+      {
+        cfg,
+      },
+    );
+    expectFields(requireRecord(completionArg.options, "completion options"), {
+      reasoning: "high",
+    });
   });
 
   it("uses scoped plugin identity and ignores caller-shaped spoofing input", async () => {

@@ -223,6 +223,10 @@ two-party event loops that do not go through the shared inbound reply runner.
       purpose: "my-plugin.summary",
       maxTokens: 512,
       temperature: 0.2,
+      // Optional: same thinking-level vocabulary as agent simple completion
+      // (`off` | `minimal` | `low` | `medium` | `high` | `xhigh` | `adaptive` | `max` | …).
+      // Required for some reasoning-mandatory models; omit to keep prior behavior.
+      reasoning: "medium",
     });
     ```
 
