@@ -314,21 +314,31 @@ function resolveInboundConversation(canonical: CanonicalInboundMessageHookContex
   parentConversationId?: string;
 } {
   const channelId = normalizeChannelId(canonical.channelId);
-  const pluginResolved = channelId
-    ? getChannelPlugin(channelId)?.messaging?.resolveInboundConversation?.({
-        from: canonical.from,
-        to: canonical.to ?? canonical.originatingTo,
-        conversationId: canonical.conversationId,
-        threadId: canonical.threadId,
-        threadParentId: canonical.threadParentId,
-        isGroup: canonical.isGroup,
-      })
-    : null;
-  if (pluginResolved) {
-    return {
-      conversationId: normalizeOptionalString(pluginResolved.conversationId),
-      parentConversationId: normalizeOptionalString(pluginResolved.parentConversationId),
-    };
+  // Only call a channel-owned resolver when the plugin exposes one. Missing
+  // resolvers still fall through to generic target parsing; explicit `null` does not.
+  const resolveInbound = channelId
+    ? getChannelPlugin(channelId)?.messaging?.resolveInboundConversation
+    : undefined;
+  if (resolveInbound) {
+    const pluginResolved = resolveInbound({
+      from: canonical.from,
+      to: canonical.to ?? canonical.originatingTo,
+      conversationId: canonical.conversationId,
+      threadId: canonical.threadId,
+      threadParentId: canonical.threadParentId,
+      isGroup: canonical.isGroup,
+    });
+    // Match resolveInboundConversationResolution: null is an explicit rejection,
+    // not a signal to stripChannelPrefix / generic fallback for the same target.
+    if (pluginResolved === null) {
+      return {};
+    }
+    if (pluginResolved !== undefined) {
+      return {
+        conversationId: normalizeOptionalString(pluginResolved.conversationId),
+        parentConversationId: normalizeOptionalString(pluginResolved.parentConversationId),
+      };
+    }
   }
   const baseConversationId = stripChannelPrefix(
     canonical.to ?? canonical.originatingTo ?? canonical.conversationId,

@@ -517,6 +517,42 @@ describe("message hook mappers", () => {
     });
   });
 
+  it("does not fall back when a channel resolver rejects an inbound claim conversation", () => {
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "reject-claim-chat",
+          source: "test",
+          plugin: {
+            ...createChannelTestPluginBase({
+              id: "reject-claim-chat",
+              label: "Reject claim chat",
+            }),
+            messaging: {
+              resolveInboundConversation: () => null,
+            },
+          },
+        },
+      ]),
+    );
+
+    const canonical = deriveInboundMessageHookContext(
+      makeInboundCtx({
+        Provider: "reject-claim-chat",
+        Surface: "reject-claim-chat",
+        OriginatingChannel: "reject-claim-chat",
+        To: "channel:room-123",
+        OriginatingTo: "channel:room-123",
+        GroupChannel: "ops",
+        GroupSubject: "guild",
+      }),
+    );
+
+    // Explicit null must leave conversationId unset (no stripChannelPrefix fallback).
+    expect(toPluginInboundClaimContext(canonical).conversationId).toBeUndefined();
+    expect(toPluginInboundClaimEvent(canonical).conversationId).toBeUndefined();
+  });
+
   it("maps transcribed and preprocessed internal payloads", () => {
     const cfg = {} as OpenClawConfig;
     const canonical = deriveInboundMessageHookContext(makeInboundCtx({ Transcript: undefined }));
