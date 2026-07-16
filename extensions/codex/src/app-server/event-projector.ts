@@ -297,7 +297,10 @@ export class CodexAppServerEventProjector {
     const assistantTexts = this.assistantProjection.collectAssistantTexts();
     const reasoningText = this.reasoningProjection.reasoningText();
     const planText = this.reasoningProjection.planText();
-    const projectedUsage = this.responseUsage ?? this.tokenUsage;
+    // A terminal timeout must not publish exact usage, but the timeout watcher
+    // can still recover a completed assistant. Keep the snapshot masked until
+    // recovery clears the abort instead of destroying it in markTimedOut().
+    const projectedUsage = this.aborted ? this.tokenUsage : (this.responseUsage ?? this.tokenUsage);
     const hasAssistantItemText = this.assistantProjection.hasAssistantItemTextForSynthesis();
     const legacyFailClosed =
       !this.completedTurn || this.completedTurn.status !== "completed" || hasAssistantItemText;
@@ -451,7 +454,6 @@ export class CodexAppServerEventProjector {
 
   markTimedOut(): void {
     this.aborted = true;
-    this.responseUsage = undefined;
     this.promptError = "codex app-server attempt timed out";
     this.promptErrorSource = "prompt";
   }

@@ -833,6 +833,55 @@ describe("CodexAppServerEventProjector", () => {
     expect(projector.buildResult(buildEmptyToolTelemetry()).attemptUsage).toBeUndefined();
   });
 
+  it("restores exact response usage after recovering a completed assistant timeout", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: { type: "agentMessage", id: "msg-1", text: "done" },
+      }),
+    );
+    await projector.handleNotification(
+      forCurrentTurn("thread/tokenUsage/updated", {
+        tokenUsage: {
+          last: {
+            totalTokens: 12,
+            inputTokens: 5,
+            cachedInputTokens: 2,
+            outputTokens: 7,
+          },
+        },
+      }),
+    );
+    await projector.handleNotification(
+      forCurrentTurn("rawResponse/completed", {
+        responseId: "response-1",
+        usage: {
+          totalTokens: 12,
+          inputTokens: 5,
+          cachedInputTokens: 2,
+          outputTokens: 7,
+          reasoningOutputTokens: 0,
+        },
+      }),
+    );
+
+    projector.markTimedOut();
+    const timedOut = projector.buildResult(buildEmptyToolTelemetry());
+    expect(timedOut.aborted).toBe(true);
+    expect(timedOut.attemptUsage?.contextUsage).toEqual({ state: "unavailable" });
+
+    expect(projector.recoverCompletedTerminalAssistantAfterTurnWatchTimeout()).toBe(true);
+    const recovered = projector.buildResult(buildEmptyToolTelemetry());
+    expect(recovered.aborted).toBe(false);
+    expect(recovered.promptError).toBeNull();
+    expect(recovered.attemptUsage?.contextUsage).toEqual({
+      state: "available",
+      promptTokens: 5,
+      totalTokens: 12,
+    });
+  });
+
   it("uses raw assistant response items when turn completion omits items", async () => {
     const projector = await createProjector();
 
