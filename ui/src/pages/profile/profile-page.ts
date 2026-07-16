@@ -28,6 +28,7 @@ import { buildSessionUsageDateParams, requestSessionsUsage } from "../../lib/ses
 import {
   isDocumentVisible,
   shouldRefreshUsageOnReconnect,
+  shouldRefreshUsageOnVisibilityResume,
 } from "../../lib/usage-reconnect-refresh.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import "../../styles/profile.css";
@@ -113,9 +114,25 @@ export class ProfilePage extends OpenClawLightDomElement {
   /** Wall time of the last retained profile usage/cost payload. */
   private profileLoadedAtMs: number | null = null;
   private subscriptions: Array<() => void> = [];
+  private readonly handleVisibilityChange = () => {
+    // Reconnect may skip a stale refresh while hidden; reevaluate on resume.
+    if (!isDocumentVisible() || !this.connected || !this.client) {
+      return;
+    }
+    if (
+      shouldRefreshUsageOnVisibilityResume({
+        hasRetainedData: Boolean(this.costSummary || this.sessionsResult || this.error),
+        loadedAtMs: this.profileLoadedAtMs,
+        nowMs: Date.now(),
+      })
+    ) {
+      void this.loadProfile();
+    }
+  };
 
   override connectedCallback() {
     super.connectedCallback();
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
     this.subscriptions = [
       this.context.gateway.subscribe((snapshot) => this.applyGatewaySnapshot(snapshot)),
       this.context.agents.subscribe(() => this.requestUpdate()),
@@ -125,6 +142,7 @@ export class ProfilePage extends OpenClawLightDomElement {
   }
 
   override disconnectedCallback() {
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     for (const unsubscribe of this.subscriptions) {
       unsubscribe();
     }

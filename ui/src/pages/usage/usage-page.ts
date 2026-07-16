@@ -29,6 +29,7 @@ import { normalizeLowercaseStringOrEmpty } from "../../lib/string-coerce.ts";
 import {
   isDocumentVisible,
   shouldRefreshUsageOnReconnect,
+  shouldRefreshUsageOnVisibilityResume,
 } from "../../lib/usage-reconnect-refresh.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
@@ -123,6 +124,21 @@ class UsagePage extends OpenClawLightDomElement {
   private observedAgentScopeId: string | null | undefined;
   /** Wall time of the last retained usage/cost payload (route data or load). */
   private usageLoadedAtMs: number | null = null;
+  private readonly handleVisibilityChange = () => {
+    // Reconnect may skip a stale refresh while hidden; reevaluate on resume.
+    if (!isDocumentVisible() || !this.connected || !this.client || !this.routeDataInitialized) {
+      return;
+    }
+    if (
+      shouldRefreshUsageOnVisibilityResume({
+        hasRetainedData: Boolean(this.usageResult || this.usageCostSummary || this.usageError),
+        loadedAtMs: this.usageLoadedAtMs,
+        nowMs: Date.now(),
+      })
+    ) {
+      void this.loadUsage();
+    }
+  };
   private readonly subscriptions = new SubscriptionsController(this)
     .effect(
       () => this.context?.gateway,
@@ -157,6 +173,11 @@ class UsagePage extends OpenClawLightDomElement {
       (agents, notify) => agents.subscribe(notify),
     );
 
+  override connectedCallback() {
+    super.connectedCallback();
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
+  }
+
   override willUpdate(changed: PropertyValues<this>) {
     if (changed.has("routeData")) {
       this.applyRouteData();
@@ -165,6 +186,7 @@ class UsagePage extends OpenClawLightDomElement {
   }
 
   override disconnectedCallback() {
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     this.subscriptions.clear();
     this.clearDateDebounce();
     this.clearQueryDebounce();

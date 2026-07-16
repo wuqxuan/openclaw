@@ -83,6 +83,7 @@ function createContext(gateway: ReturnType<typeof createMutableGateway>): Applic
 
 afterEach(() => {
   document.body.replaceChildren();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -186,5 +187,77 @@ describe("usage page reconnect refresh policy", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalled());
     expect(request).toHaveBeenCalledWith("sessions.usage", expect.any(Object));
     expect(request).toHaveBeenCalledWith("usage.cost", expect.any(Object));
+  });
+
+  it("refreshes stale retained data on hidden-to-visible resume after reconnect skip", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    let visibilityState: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibilityState);
+
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.usage") {
+        return { sessions: [{ key: "live" }] };
+      }
+      if (method === "usage.cost") {
+        return { totals: { totalCost: 1 } };
+      }
+      if (method === "usage.status") {
+        return null;
+      }
+      return {};
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const gateway = createMutableGateway(client, true);
+    const context = createContext(gateway);
+    const retained = {
+      sessions: [{ key: "retained" }],
+    } as unknown as UsageRouteData["result"];
+    const page = document.createElement("openclaw-usage-page") as TestPage;
+    page.context = context;
+    page.render = () => nothing;
+    page.routeData = {
+      gateway: context.gateway,
+      gatewaySnapshot: gateway.snapshot,
+      query: {
+        startDate: "2026-07-15",
+        endDate: "2026-07-15",
+        scope: "family",
+        timeZone: "local",
+        agentId: null,
+      },
+      result: retained,
+      costSummary: { totals: { totalCost: 2 } } as unknown as UsageRouteData["costSummary"],
+      providerUsageSummary: null,
+      error: null,
+    };
+
+    document.body.append(page);
+    await page.updateComplete;
+    expect(page.usageResult).toBe(retained);
+    request.mockClear();
+
+    // Payload ages past the five-minute stale window while the tab is hidden.
+    visibilityState = "hidden";
+    vi.setSystemTime(new Date("2026-07-15T12:06:00.000Z"));
+
+    // Same-client reconnect while hidden must not re-scan the gateway.
+    gateway.publish({ connected: false, reconnecting: true });
+    await page.updateComplete;
+    gateway.publish({ connected: true, reconnecting: false, client });
+    await page.updateComplete;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(request).not.toHaveBeenCalled();
+    expect(page.usageResult).toBe(retained);
+
+    // Returning to the tab reevaluates freshness and refreshes stale data.
+    visibilityState = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalled());
+    expect(request).toHaveBeenCalledWith("sessions.usage", expect.any(Object));
+    expect(request).toHaveBeenCalledWith("usage.cost", expect.any(Object));
+
+    vi.useRealTimers();
   });
 });

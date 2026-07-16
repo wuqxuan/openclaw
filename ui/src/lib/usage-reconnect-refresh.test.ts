@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  USAGE_RECONNECT_STALE_MS,
   shouldRefreshUsageOnReconnect,
+  shouldRefreshUsageOnVisibilityResume,
 } from "./usage-reconnect-refresh.ts";
+
+/** Matches the default stale window in usage-reconnect-refresh.ts. */
+const USAGE_RECONNECT_STALE_MS = 5 * 60 * 1000;
 
 describe("shouldRefreshUsageOnReconnect", () => {
   const base = {
@@ -68,6 +71,42 @@ describe("shouldRefreshUsageOnReconnect", () => {
         nowMs: base.loadedAtMs! + 1_000,
         visible: true,
         staleMs: 500,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("shouldRefreshUsageOnVisibilityResume", () => {
+  const base = {
+    loadedAtMs: 1_000_000,
+    nowMs: 1_000_000,
+  };
+
+  it("loads when no retained usage/cost data is available", () => {
+    expect(
+      shouldRefreshUsageOnVisibilityResume({
+        ...base,
+        hasRetainedData: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("reuses fresh retained data when the tab becomes visible", () => {
+    expect(
+      shouldRefreshUsageOnVisibilityResume({
+        ...base,
+        hasRetainedData: true,
+        nowMs: base.loadedAtMs! + USAGE_RECONNECT_STALE_MS - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("refreshes stale retained data when the tab becomes visible", () => {
+    expect(
+      shouldRefreshUsageOnVisibilityResume({
+        ...base,
+        hasRetainedData: true,
+        nowMs: base.loadedAtMs! + USAGE_RECONNECT_STALE_MS,
       }),
     ).toBe(true);
   });

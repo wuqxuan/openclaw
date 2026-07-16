@@ -5,17 +5,26 @@
  *
  * Refresh on reconnect only when there is no retained payload yet, or when the
  * retained payload is past the stale window and the document is visible.
- * Explicit operator refresh always bypasses this policy.
+ * If reconnect skips while hidden, visibility-resume reevaluates the same
+ * freshness policy once the tab is visible again so stale values are not kept
+ * indefinitely. Explicit operator refresh always bypasses this policy.
  */
 
 /** Default TTL for reconnect-time auto-refresh of usage/cost payloads. */
-export const USAGE_RECONNECT_STALE_MS = 5 * 60 * 1000;
+const USAGE_RECONNECT_STALE_MS = 5 * 60 * 1000;
 
-export type UsageReconnectRefreshInput = {
+type UsageReconnectRefreshInput = {
   hasRetainedData: boolean;
   loadedAtMs: number | null;
   nowMs: number;
   visible: boolean;
+  staleMs?: number;
+};
+
+type UsageVisibilityResumeInput = {
+  hasRetainedData: boolean;
+  loadedAtMs: number | null;
+  nowMs: number;
   staleMs?: number;
 };
 
@@ -30,6 +39,15 @@ export function shouldRefreshUsageOnReconnect(input: UsageReconnectRefreshInput)
   const staleMs = input.staleMs ?? USAGE_RECONNECT_STALE_MS;
   const stale = input.nowMs - input.loadedAtMs >= staleMs;
   return stale && input.visible;
+}
+
+/**
+ * Decide whether becoming visible should re-fetch usage/cost data.
+ * Shared with Usage and Profile: complements reconnect suppression so a stale
+ * payload skipped while hidden is refreshed on the next visible resume.
+ */
+export function shouldRefreshUsageOnVisibilityResume(input: UsageVisibilityResumeInput): boolean {
+  return shouldRefreshUsageOnReconnect({ ...input, visible: true });
 }
 
 export function isDocumentVisible(): boolean {
