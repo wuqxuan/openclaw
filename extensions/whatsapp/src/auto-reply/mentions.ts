@@ -68,19 +68,29 @@ function isBotMentionedFromTargets(
     : isSelfChatMode(targets.self.e164, mentionCfg.allowFrom) && !isGroupConversation;
 
   const hasMentions = targets.normalizedMentions.length > 0;
+  // Evaluate configured text patterns once so the third-party-native-mention
+  // branch can honor mentionPatterns without also enabling the numeric
+  // self-E.164 fallback (which would over-trigger on incidental numbers).
+  const bodyClean = clean(msg.payload.body);
+  const matchesConfiguredMention = mentionCfg.mentionRegexes.some((re) => re.test(bodyClean));
   if (hasMentions && !isSelfChat) {
     for (const mention of targets.normalizedMentions) {
       if (identitiesOverlap(targets.self, mention)) {
         return true;
       }
     }
-    // If the message explicitly mentions someone else, do not fall back to regex matches.
+    // Native @-mentions of other participants must not suppress operator
+    // mentionPatterns (requireMention groups). Numeric self fallback stays
+    // off in this branch so a third-party @mention + phone-looking body text
+    // does not accidentally admit the message (#109488).
+    if (matchesConfiguredMention) {
+      return true;
+    }
     return false;
   } else if (hasMentions && isSelfChat) {
     // Self-chat mode: ignore WhatsApp @mention JIDs, otherwise @mentioning the owner in self-chat triggers the bot.
   }
-  const bodyClean = clean(msg.payload.body);
-  if (mentionCfg.mentionRegexes.some((re) => re.test(bodyClean))) {
+  if (matchesConfiguredMention) {
     return true;
   }
 
