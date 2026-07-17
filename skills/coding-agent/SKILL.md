@@ -121,6 +121,7 @@ CODEX_HOME="$CODEX_HOME" codex login status   # preflight: must report logged in
 Rules:
 
 - Prefer a stable path such as `~/.codex-coding-agent` (or another dedicated directory you control).
+- Set `CODEX_HOME_CODING_AGENT` when using a non-default worker home; the Codex launch forms below honor it.
 - Scope `CODEX_HOME` **only** on Codex worker commands (`codex login`, `codex login status`, `codex exec`). Do not set it on the OpenClaw gateway, agent runtime, or unrelated shells that should keep using OpenClaw's auth store.
 - If `codex login status` fails for the worker home, re-run `CODEX_HOME=… codex login` before spawning work. Do not fall back to ambient `~/.codex` to "just make it work."
 - Claude Code and OpenCode launches are unchanged by this section; apply the isolation only to Codex CLI workers.
@@ -144,8 +145,8 @@ Use `$PROMPT` when launching from the same shell/session. If using a separate to
 Codex (dedicated worker home — required):
 
 ```bash
-# Scope CODEX_HOME only on this command (default worker home shown).
-bash pty:true background:true workdir:/path/isolated-worktree command:"CODEX_HOME=\"$HOME/.codex-coding-agent\" codex exec - < \"$PROMPT\""
+# Scope CODEX_HOME only on this command (override or default worker home).
+bash pty:true background:true workdir:/path/isolated-worktree command:"CODEX_HOME=\"${CODEX_HOME_CODING_AGENT:-$HOME/.codex-coding-agent}\" codex exec - < \"$PROMPT\""
 ```
 
 Claude Code:
@@ -181,7 +182,7 @@ Build X.
 <notification block>
 EOF
 printf 'prompt file: %s\n' "$PROMPT"
-bash pty:true background:true workdir:$SCRATCH command:"CODEX_HOME=\"$HOME/.codex-coding-agent\" codex exec - < \"$PROMPT\""
+bash pty:true background:true workdir:$SCRATCH command:"CODEX_HOME=\"${CODEX_HOME_CODING_AGENT:-$HOME/.codex-coding-agent}\" codex exec - < \"$PROMPT\""
 ```
 
 ## Process actions
