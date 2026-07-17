@@ -277,7 +277,7 @@ describe("restart health", () => {
     expect(sleep).toHaveBeenCalledTimes(185);
   });
 
-  it("extends stopped-free early exit past launchd KeepAlive ThrottleInterval", async () => {
+  it("extends stopped-free early exit for a loaded launchd KeepAlive service", async () => {
     // KeepAlive=true with ThrottleInterval=10s can leave stopped+port-free for a full
     // throttle window; baseline 6×500ms (~3s) after the 10s grace false-fires (#109941).
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -288,28 +288,42 @@ describe("restart health", () => {
       hints: [],
     });
 
+    const isLoaded = vi.fn(async () => true);
+    const service = {
+      ...makeGatewayService({ status: "stopped" }),
+      isLoaded,
+    } as GatewayService;
+    const serviceEnv = { OPENCLAW_PROFILE: "keepalive-test" } as NodeJS.ProcessEnv;
+
     const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
-      service: makeGatewayService({ status: "stopped" }),
+      service,
       port: 18789,
       attempts: 120,
       delayMs: 500,
-      supervisor: {
-        kind: "launchd-keepalive",
-        throttleIntervalMs: 10_000,
-      },
+      env: serviceEnv,
     });
 
     expect(snapshot.healthy).toBe(false);
     expect(snapshot.runtime.status).toBe("stopped");
     expect(snapshot.portUsage.status).toBe("free");
     expect(snapshot.waitOutcome).toBe("stopped-free");
-    // Grace 10s (20 polls) then 21 consecutive polls (ceil(10s/500ms)+1) → 40 sleeps.
-    expect(snapshot.elapsedMs).toBe(20_000);
-    expect(sleep).toHaveBeenCalledTimes(40);
+    // Grace 10s (20 polls), then wait one poll beyond the 10s throttle boundary.
+    expect(snapshot.elapsedMs).toBe(20_500);
+    expect(sleep).toHaveBeenCalledTimes(41);
+    expect(isLoaded).toHaveBeenCalledOnce();
+    expect(isLoaded).toHaveBeenCalledWith({ env: serviceEnv });
   });
 
-  it("keeps baseline stopped-free exit when launchd KeepAlive is not active", async () => {
+  it.each([
+    ["unloaded", vi.fn(async () => false)],
+    [
+      "unavailable",
+      vi.fn(async () => {
+        throw new Error("launchctl unavailable");
+      }),
+    ],
+  ])("keeps baseline stopped-free exit when launchd is %s", async (_name, isLoaded) => {
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
     inspectPortUsage.mockResolvedValue({
       port: 18789,
@@ -317,19 +331,23 @@ describe("restart health", () => {
       listeners: [],
       hints: [],
     });
+    const service = {
+      ...makeGatewayService({ status: "stopped" }),
+      isLoaded,
+    } as GatewayService;
 
     const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
-      service: makeGatewayService({ status: "stopped" }),
+      service,
       port: 18789,
       attempts: 120,
       delayMs: 500,
-      supervisor: { kind: "none" },
     });
 
     expect(snapshot.waitOutcome).toBe("stopped-free");
     expect(snapshot.elapsedMs).toBe(12_500);
     expect(sleep).toHaveBeenCalledTimes(25);
+    expect(isLoaded).toHaveBeenCalledOnce();
   });
 
   it("does not stop-free-exit inside one KeepAlive throttle window when health recovers", async () => {
@@ -354,6 +372,7 @@ describe("restart health", () => {
         ? { status: "stopped" as const }
         : { status: "running" as const, pid: 8000 },
     );
+    const isLoaded = vi.fn(async () => true);
     probeGateway.mockResolvedValue({
       ok: true,
       close: null,
@@ -362,19 +381,16 @@ describe("restart health", () => {
 
     const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
-      service: { readRuntime } as unknown as GatewayService,
+      service: { readRuntime, isLoaded } as unknown as GatewayService,
       port: 18789,
       attempts: 120,
       delayMs: 500,
-      supervisor: {
-        kind: "launchd-keepalive",
-        throttleIntervalMs: 10_000,
-      },
     });
 
     expect(snapshot.waitOutcome).toBe("healthy");
     expect(snapshot.healthy).toBe(true);
     expect(snapshot.elapsedMs).toBeGreaterThan(12_500);
+    expect(isLoaded).toHaveBeenCalledOnce();
   });
 
   it("keeps waiting when the expected gateway version is not available yet", async () => {

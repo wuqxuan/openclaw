@@ -295,7 +295,9 @@ function stoppedFreeEarlyExitThreshold(
     return STOPPED_FREE_BASELINE_THRESHOLD;
   }
   const throttlePolls = Math.ceil(supervisor.throttleIntervalMs / Math.max(1, delayMs));
-  return Math.max(STOPPED_FREE_BASELINE_THRESHOLD, throttlePolls + 1);
+  // The first stopped+free sample starts the interval; add two so the final
+  // sample lands one full poll after the throttle boundary, not exactly on it.
+  return Math.max(STOPPED_FREE_BASELINE_THRESHOLD, throttlePolls + 2);
 }
 
 /**
