@@ -41,6 +41,11 @@ const loadCronIsolatedAgentModule = () => {
   return cronIsolatedAgentModulePromise;
 };
 
+// Process-wide same-session chain (not per handler instance). Lazy hooks handler
+// creation can race two createGatewayHooksRequestHandler calls on concurrent first
+// requests; a module-level map keeps those bursts serialized on one queue.
+const agentHookRunChains = new Map<string, Promise<void>>();
+
 function resolveHookEventSessionKey(params: { cfg: OpenClawConfig; agentId?: string }): string {
   return params.agentId
     ? resolveAgentMainSessionKey({ cfg: params.cfg, agentId: params.agentId })
@@ -118,8 +123,6 @@ export function createGatewayHooksRequestHandler(params: {
   // silently dropped (#110109). Same-session events append to one session anyway,
   // so serialize them: chain each run behind the previous in-flight run for that
   // sessionKey while different keys stay concurrent.
-  const agentHookRunChains = new Map<string, Promise<void>>();
-
   const enqueueAgentHookRun = (sessionKey: string, run: () => Promise<void>) => {
     const prior = agentHookRunChains.get(sessionKey);
     if (prior) {

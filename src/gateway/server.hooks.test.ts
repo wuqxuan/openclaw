@@ -1054,4 +1054,99 @@ describe("gateway server hooks", () => {
       drainSystemEvents(resolveMainKey());
     });
   });
+
+  // Live Gateway HTTP proof for #110109: same-session FIFO + cross-session overlap.
+  test("serializes same-session /hooks/agent bursts while cross-session stays concurrent", async () => {
+    function deferredCronRun() {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const run = vi.fn(async (params: { message?: string; sessionKey?: string }) => {
+        await gate;
+        return { status: "ok" as const, summary: `done:${params.message ?? ""}` };
+      });
+      return { run, release };
+    }
+
+    testState.hooksConfig = {
+      enabled: true,
+      token: HOOK_TOKEN,
+      allowRequestSessionKey: true,
+      allowedSessionKeyPrefixes: ["hook:"],
+    };
+    setMainAndHooksAgents();
+
+    await withGatewayServer(async ({ port }) => {
+      // Cold concurrent first-request burst (no warmup): proves the process-wide
+      // session queue survives lazy handler init races on a running Gateway.
+      const first = deferredCronRun();
+      const second = deferredCronRun();
+      cronIsolatedRun.mockReset();
+      cronIsolatedRun.mockImplementationOnce(first.run).mockImplementationOnce(second.run);
+
+      const sameSessionPosts = await Promise.all([
+        postHook(port, "/hooks/agent", {
+          message: "review submitted",
+          name: "Review",
+          sessionKey: "hook:pr:110109",
+          deliver: false,
+        }),
+        postHook(port, "/hooks/agent", {
+          message: "inline comment",
+          name: "Comment",
+          sessionKey: "hook:pr:110109",
+          deliver: false,
+        }),
+      ]);
+      expect(sameSessionPosts.map((response) => response.status)).toEqual([200, 200]);
+
+      await expect
+        .poll(() => first.run.mock.calls.length, { timeout: 2_000, interval: 10 })
+        .toBe(1);
+      expect(second.run).not.toHaveBeenCalled();
+
+      first.release();
+      await expect
+        .poll(() => second.run.mock.calls.length, { timeout: 2_000, interval: 10 })
+        .toBe(1);
+      const secondMessage = (second.run.mock.calls[0]?.[0] as { message?: string } | undefined)
+        ?.message;
+      expect(secondMessage).toBe("inline comment");
+      second.release();
+      await waitForCronIsolatedRuns(2);
+
+      // Cross-session: both keys start without either finishing first.
+      const crossA = deferredCronRun();
+      const crossB = deferredCronRun();
+      cronIsolatedRun.mockReset();
+      cronIsolatedRun.mockImplementationOnce(crossA.run).mockImplementationOnce(crossB.run);
+
+      const crossPosts = await Promise.all([
+        postHook(port, "/hooks/agent", {
+          message: "session-a",
+          name: "A",
+          sessionKey: "hook:pr:a",
+          deliver: false,
+        }),
+        postHook(port, "/hooks/agent", {
+          message: "session-b",
+          name: "B",
+          sessionKey: "hook:pr:b",
+          deliver: false,
+        }),
+      ]);
+      expect(crossPosts.map((response) => response.status)).toEqual([200, 200]);
+
+      await expect
+        .poll(() => crossA.run.mock.calls.length, { timeout: 2_000, interval: 10 })
+        .toBe(1);
+      await expect
+        .poll(() => crossB.run.mock.calls.length, { timeout: 2_000, interval: 10 })
+        .toBe(1);
+      crossA.release();
+      crossB.release();
+      await waitForCronIsolatedRuns(2);
+    });
+  });
 });
