@@ -118,6 +118,14 @@ CODEX_HOME="$CODEX_HOME" codex login
 CODEX_HOME="$CODEX_HOME" codex login status   # preflight: must report logged in under this home
 ```
 
+The dedicated home is a fully independent Codex profile, not only an authentication directory. It does not inherit the ambient profile's `config.toml`, profile overrides, MCP/plugin setup, skills or instructions, hooks, memories, logs, history, or sessions.
+
+When moving an existing worker off the ambient profile:
+
+1. Start with an empty dedicated home and run `codex login` there. Do not copy or symlink the ambient home, `auth.json`, `.credentials.json`, or platform-keyring credentials.
+2. Recreate only the settings the worker needs. Review and copy known non-secret configuration, instruction, or skill files individually; configure MCP servers under the dedicated home and authorize any credential-bearing integration separately.
+3. Leave logs, history, memories, and sessions behind. They are not required for the worker profile and may contain sensitive context.
+
 Rules:
 
 - Prefer a stable path such as `~/.codex-coding-agent` (or another dedicated directory you control).
