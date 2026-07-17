@@ -84,19 +84,6 @@ import {
 } from "./session-utils.js";
 
 const ACP_RUNTIME_CLEANUP_TIMEOUT_MS = 15_000;
-/** Test-only override so cancel/close timeout recovery can be proven without a 15s wait. */
-let acpRuntimeCleanupTimeoutMsForTests: number | null = null;
-
-function resolveAcpCleanupTimeoutMs(): number {
-  return acpRuntimeCleanupTimeoutMsForTests ?? ACP_RUNTIME_CLEANUP_TIMEOUT_MS;
-}
-
-export const testing = {
-  setAcpCleanupTimeoutMsForTests(ms: number | null) {
-    acpRuntimeCleanupTimeoutMsForTests =
-      typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? ms : null;
-  },
-};
 
 export function archiveSessionTranscriptsForSessionDetailed(params: {
   sessionId: string | undefined;
@@ -411,7 +398,7 @@ async function runAcpCleanupStep(params: {
 }): Promise<{ status: "ok" } | { status: "timeout" } | { status: "error"; error: unknown }> {
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<{ status: "timeout" }>((resolve) => {
-    timer = setTimeout(() => resolve({ status: "timeout" }), resolveAcpCleanupTimeoutMs());
+    timer = setTimeout(() => resolve({ status: "timeout" }), ACP_RUNTIME_CLEANUP_TIMEOUT_MS);
   });
   const opPromise = params
     .op()

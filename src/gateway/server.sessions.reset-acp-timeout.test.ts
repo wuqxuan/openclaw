@@ -7,7 +7,6 @@ import {
 } from "../acp/runtime/session-meta.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { testing as sessionResetTesting } from "./session-reset-service.js";
 import { writeSessionStore } from "./test-helpers.js";
 import {
   acpManagerMocks,
@@ -21,6 +20,7 @@ import {
 const { createSessionStoreDir } = setupGatewaySessionsTestHarness();
 
 afterEach(() => {
+  vi.useRealTimers();
   closeOpenClawStateDatabaseForTest();
 });
 
@@ -101,6 +101,12 @@ async function resetMainSession() {
   );
 }
 
+async function resetAfterCleanupTimeout() {
+  const resetPromise = resetMainSession();
+  await vi.advanceTimersByTimeAsync(15_000);
+  return await resetPromise;
+}
+
 function expectForceDiscarded(
   prepareFreshSession: ReturnType<typeof installAcpRuntimeBackendWithFreshSession>,
 ) {
@@ -117,24 +123,23 @@ function expectForceDiscarded(
 }
 
 test("sessions.reset force-discards ACP runtime when cancel times out", async () => {
-  sessionResetTesting.setAcpCleanupTimeoutMsForTests(25);
+  vi.useFakeTimers();
   try {
     const prepareFreshSession = await setupAcpSession("backend-session-timeout");
     // Hang cancel so the cleanup race times out; close must be skipped and the
     // manager force-discard path must run so the handle is not left reusable.
     acpManagerMocks.cancelSession.mockImplementation(() => new Promise(() => {}));
 
-    expect((await resetMainSession()).ok).toBe(true);
+    expect((await resetAfterCleanupTimeout()).ok).toBe(true);
     expect(acpManagerMocks.closeSession).not.toHaveBeenCalled();
     expectForceDiscarded(prepareFreshSession);
   } finally {
-    sessionResetTesting.setAcpCleanupTimeoutMsForTests(null);
     acpManagerMocks.cancelSession.mockImplementation(async () => {});
   }
 });
 
 test("sessions.reset force-discards ACP runtime when close times out", async () => {
-  sessionResetTesting.setAcpCleanupTimeoutMsForTests(25);
+  vi.useFakeTimers();
   try {
     const prepareFreshSession = await setupAcpSession("backend-session-close-timeout");
     // Cancel succeeds; hang close so cleanup times out and force-discard still
@@ -142,12 +147,11 @@ test("sessions.reset force-discards ACP runtime when close times out", async () 
     acpManagerMocks.cancelSession.mockImplementation(async () => {});
     acpManagerMocks.closeSession.mockImplementation(() => new Promise(() => {}));
 
-    expect((await resetMainSession()).ok).toBe(true);
+    expect((await resetAfterCleanupTimeout()).ok).toBe(true);
     expect(acpManagerMocks.cancelSession).toHaveBeenCalled();
     expect(acpManagerMocks.closeSession).toHaveBeenCalledTimes(1);
     expectForceDiscarded(prepareFreshSession);
   } finally {
-    sessionResetTesting.setAcpCleanupTimeoutMsForTests(null);
     acpManagerMocks.cancelSession.mockImplementation(async () => {});
     acpManagerMocks.closeSession.mockImplementation(async () => {});
   }
