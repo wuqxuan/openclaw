@@ -139,6 +139,7 @@ export type ActiveTurnState = {
   handle: AcpRuntimeHandle;
   abortController: AbortController;
   cancelPromise?: Promise<void>;
+  onDiscard?: () => void;
 };
 
 export type TurnLatencyStats = {

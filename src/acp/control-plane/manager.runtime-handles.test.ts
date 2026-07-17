@@ -4,6 +4,7 @@ import {
   AcpRuntimeError,
   AcpSessionManager,
   baseCfg,
+  createDeferred,
   createRuntime,
   expectRecordFields,
   hoisted,
@@ -106,7 +107,7 @@ describe("AcpSessionManager runtime handles", () => {
     });
   });
 
-  it("force-discards a cached runtime handle without waiting on the session actor", async () => {
+  it("retires the stuck actor generation and fences its late cancel completion", async () => {
     const runtimeState = createRuntime();
     let resolveCancel: (() => void) | undefined;
     runtimeState.cancel.mockImplementation(
@@ -142,6 +143,7 @@ describe("AcpSessionManager runtime handles", () => {
       sessionKey: "agent:codex:acp:session-1",
       reason: "session-reset",
     });
+    void stuckCancel.catch(() => undefined);
     await vi.waitFor(() => {
       expect(runtimeState.cancel).toHaveBeenCalled();
     });
@@ -158,10 +160,7 @@ describe("AcpSessionManager runtime handles", () => {
       reason: "session-reset",
     });
 
-    resolveCancel?.();
-    await stuckCancel;
-
-    await manager.runTurn({
+    const freshTurn = manager.runTurn({
       provenance: "system",
       cfg: baseCfg,
       sessionKey: "agent:codex:acp:session-1",
@@ -169,8 +168,174 @@ describe("AcpSessionManager runtime handles", () => {
       mode: "prompt",
       requestId: "r2",
     });
+    const freshOutcome = await Promise.race([
+      freshTurn.then(() => "completed" as const),
+      new Promise<"timed-out">((resolve) => {
+        setTimeout(() => resolve("timed-out"), 250);
+      }),
+    ]);
+    expect(freshOutcome).toBe("completed");
+
+    resolveCancel?.();
+    await expect(stuckCancel).rejects.toMatchObject({
+      code: "ACP_TURN_FAILED",
+      message: "ACP operation was superseded by session reset.",
+    });
+
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "after-late-cancel",
+      mode: "prompt",
+      requestId: "r3",
+    });
     expect(runtimeState.ensureSession).toHaveBeenCalledTimes(2);
-    expect(runtimeState.runTurn).toHaveBeenCalledTimes(2);
+    expect(runtimeState.runTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a fresh handle cached after the retired close generation settles", async () => {
+    const runtimeState = createRuntime();
+    let resolveOldClose: (() => void) | undefined;
+    let closeCalls = 0;
+    runtimeState.close.mockImplementation(() => {
+      closeCalls += 1;
+      if (closeCalls === 1) {
+        return new Promise<void>((resolve) => {
+          resolveOldClose = resolve;
+        });
+      }
+      return new Promise(() => {});
+    });
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+    hoisted.readAcpSessionEntryMock.mockReturnValue({
+      sessionKey: "agent:codex:acp:session-1",
+      storeSessionKey: "agent:codex:acp:session-1",
+      acp: readySessionMeta(),
+    });
+
+    const manager = new AcpSessionManager();
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "first",
+      mode: "prompt",
+      requestId: "r1",
+    });
+    const stuckClose = manager.closeSession({
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      reason: "session-reset",
+    });
+    void stuckClose.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(runtimeState.close).toHaveBeenCalledTimes(1);
+    });
+
+    await manager.forceDiscardSession({
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      reason: "session-reset",
+    });
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "fresh",
+      mode: "prompt",
+      requestId: "r2",
+    });
+
+    resolveOldClose?.();
+    await expect(stuckClose).rejects.toMatchObject({
+      code: "ACP_TURN_FAILED",
+      message: "ACP operation was superseded by session reset.",
+    });
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "reuse-fresh",
+      mode: "prompt",
+      requestId: "r3",
+    });
+
+    expect(runtimeState.ensureSession).toHaveBeenCalledTimes(2);
+    expect(runtimeState.runTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it("suppresses late output from a retired active-turn generation", async () => {
+    const runtimeState = createRuntime();
+    const releaseOldTurn = createDeferred();
+    runtimeState.runTurn.mockImplementation(async function* (input: { requestId: string }) {
+      if (input.requestId === "r1") {
+        yield { type: "text_delta" as const, stream: "output" as const, text: "old-start" };
+        await releaseOldTurn.promise;
+        yield { type: "text_delta" as const, stream: "output" as const, text: "old-late" };
+      } else {
+        yield { type: "text_delta" as const, stream: "output" as const, text: "fresh" };
+      }
+      yield { type: "done" as const };
+    });
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+    hoisted.readAcpSessionEntryMock.mockReturnValue({
+      sessionKey: "agent:codex:acp:session-1",
+      storeSessionKey: "agent:codex:acp:session-1",
+      acp: readySessionMeta(),
+    });
+
+    const events: string[] = [];
+    const manager = new AcpSessionManager();
+    const oldTurn = manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "old",
+      mode: "prompt",
+      requestId: "r1",
+      onEvent: (event) => {
+        if (event.type === "text_delta") {
+          events.push(event.text);
+        }
+      },
+    });
+    void oldTurn.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(events).toEqual(["old-start"]);
+    });
+
+    await manager.forceDiscardSession({
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      reason: "session-reset",
+    });
+    await manager.runTurn({
+      provenance: "system",
+      cfg: baseCfg,
+      sessionKey: "agent:codex:acp:session-1",
+      text: "fresh",
+      mode: "prompt",
+      requestId: "r2",
+      onEvent: (event) => {
+        if (event.type === "text_delta") {
+          events.push(event.text);
+        }
+      },
+    });
+    releaseOldTurn.resolve();
+
+    await expect(oldTurn).rejects.toMatchObject({
+      code: "ACP_TURN_FAILED",
+      message: "ACP operation was superseded by session reset.",
+    });
+    expect(events).toEqual(["old-start", "fresh"]);
   });
 
   it("force-discards without awaiting a hanging runtime close", async () => {

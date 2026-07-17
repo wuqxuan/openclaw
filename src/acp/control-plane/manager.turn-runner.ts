@@ -70,6 +70,7 @@ export async function runManagerTurn(params: {
   }) => void;
   reconcileRuntimeSessionIdentifiers: ReconcileManagerRuntimeSessionIdentifiers;
   writeSessionMeta: WriteManagerSessionMeta;
+  assertOperationCurrent: () => void;
 }): Promise<void> {
   const { input, sessionKey } = params;
   const turnStartedAt = Date.now();
@@ -113,6 +114,7 @@ export async function runManagerTurn(params: {
   });
   const backendAttempts: BackendAttempt[] = [];
   const recordBackendFailure = async (error: AcpRuntimeError) => {
+    params.assertOperationCurrent();
     const failedBackends = backendAttempts
       .map((attempt) => `${attempt.backend}: ${attempt.error}`)
       .join(" | ");
@@ -204,6 +206,7 @@ export async function runManagerTurn(params: {
         let sawTurnOutput = false;
         let retryFreshHandle = false;
         let skipPostTurnCleanup = false;
+        const eventGate = { open: true };
         try {
           const ensured = await params.ensureRuntimeHandle({
             cfg: input.cfg,
@@ -226,6 +229,7 @@ export async function runManagerTurn(params: {
             state: "running",
             clearLastError: true,
           });
+          params.assertOperationCurrent();
 
           internalAbortController = new AbortController();
           onCallerAbort = () => {
@@ -241,6 +245,9 @@ export async function runManagerTurn(params: {
             runtime,
             handle,
             abortController: internalAbortController,
+            onDiscard: () => {
+              eventGate.open = false;
+            },
           };
           params.activeTurnBySession.set(actorKey, activeTurn);
           activeTurnStarted = true;
@@ -248,11 +255,12 @@ export async function runManagerTurn(params: {
           const combinedSignal = input.signal
             ? AbortSignal.any([input.signal, internalAbortController.signal])
             : internalAbortController.signal;
-          const eventGate = { open: true };
+          params.assertOperationCurrent();
           await input.onLifecycle?.({
             type: "prompt_submitted",
             at: Date.now(),
           });
+          params.assertOperationCurrent();
           const turnPromise = consumeAcpTurnStream({
             runtime,
             turn: {
@@ -265,6 +273,7 @@ export async function runManagerTurn(params: {
             },
             eventGate,
             onOutputEvent: (event) => {
+              params.assertOperationCurrent();
               sawTurnOutput = true;
               if (event.type === "text_delta" && event.stream !== "thought" && event.text) {
                 taskProgressSummary = appendBackgroundTaskProgressSummary(
@@ -280,7 +289,10 @@ export async function runManagerTurn(params: {
                 });
               }
             },
-            onEvent: input.onEvent,
+            onEvent: async (event) => {
+              params.assertOperationCurrent();
+              await input.onEvent?.(event);
+            },
           });
           const turnTimeoutMs = resolveTurnTimeoutMs({
             cfg: input.cfg,
@@ -311,6 +323,7 @@ export async function runManagerTurn(params: {
               });
             },
           });
+          params.assertOperationCurrent();
           if (!turnOutcome.terminalStatus) {
             throw new AcpRuntimeError(
               "ACP_TURN_FAILED",
@@ -349,6 +362,7 @@ export async function runManagerTurn(params: {
           });
           return;
         } catch (error) {
+          params.assertOperationCurrent();
           const acpError = toAcpRuntimeError({
             error,
             fallbackCode: activeTurnStarted ? "ACP_TURN_FAILED" : "ACP_SESSION_INIT_FAILED",
@@ -434,7 +448,13 @@ export async function runManagerTurn(params: {
     }
   } finally {
     if (acpTurnMarkedActive) {
-      clearAcpTurnActive(sessionKey);
+      try {
+        params.assertOperationCurrent();
+        clearAcpTurnActive(sessionKey);
+      } catch {
+        // forceDiscardSession already cleared the retired generation's marker;
+        // a late completion must not clear a replacement turn's marker.
+      }
     }
   }
 }

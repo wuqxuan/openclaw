@@ -23,24 +23,34 @@ export class ManagerRuntimeHandleCache {
   private evictedRuntimeCount = 0;
   private lastEvictedAt: number | undefined;
 
+  constructor(private readonly isActorOperationCurrent: (actorKey: string) => boolean = () => true) {}
+
   size(): number {
     return this.runtimeCache.size();
   }
 
   has(sessionKey: string): boolean {
-    return this.runtimeCache.has(normalizeActorKey(sessionKey));
+    const actorKey = normalizeActorKey(sessionKey);
+    return this.isActorOperationCurrent(actorKey) && this.runtimeCache.has(actorKey);
   }
 
   get(sessionKey: string): CachedRuntimeState | null {
-    return this.runtimeCache.get(normalizeActorKey(sessionKey));
+    const actorKey = normalizeActorKey(sessionKey);
+    return this.isActorOperationCurrent(actorKey) ? this.runtimeCache.get(actorKey) : null;
   }
 
   set(sessionKey: string, state: CachedRuntimeState): void {
-    this.runtimeCache.set(normalizeActorKey(sessionKey), state);
+    const actorKey = normalizeActorKey(sessionKey);
+    if (this.isActorOperationCurrent(actorKey)) {
+      this.runtimeCache.set(actorKey, state);
+    }
   }
 
   clear(sessionKey: string): void {
-    this.runtimeCache.clear(normalizeActorKey(sessionKey));
+    const actorKey = normalizeActorKey(sessionKey);
+    if (this.isActorOperationCurrent(actorKey)) {
+      this.runtimeCache.clear(actorKey);
+    }
   }
 
   /** Returns cache counters used by ACP manager observability snapshots. */
@@ -80,11 +90,14 @@ export class ManagerRuntimeHandleCache {
    * handle reusable.
    */
   detachAndCloseBestEffort(params: { sessionKey: string; reason: string }): void {
-    const cached = this.get(params.sessionKey);
+    const actorKey = normalizeActorKey(params.sessionKey);
+    // Force-discard intentionally bypasses the current actor-operation fence:
+    // it is the operation that retires that generation and owns detachment.
+    const cached = this.runtimeCache.get(actorKey);
     if (!cached) {
       return;
     }
-    this.clear(params.sessionKey);
+    this.runtimeCache.clear(actorKey);
     void cached.runtime
       .close({
         handle: cached.handle,

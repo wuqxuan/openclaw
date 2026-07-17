@@ -1,4 +1,5 @@
 /** Main ACP session manager implementation and public control-plane facade. */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   AcpRuntime,
   AcpRuntimeCapabilities,
@@ -10,6 +11,7 @@ import { logVerbose } from "../../globals.js";
 import { toErrorObject } from "../../infra/errors.js";
 import { isAcpSessionKey } from "../../sessions/session-key-utils.js";
 import { AcpRuntimeError } from "../runtime/errors.js";
+import { clearAcpTurnActive } from "./active-turns.js";
 import { runManagerCancelSession } from "./manager.cancel-session.js";
 import { runManagerCloseSession } from "./manager.close-session.js";
 import { reconcileManagerRuntimeSessionIdentifiers } from "./manager.identity-reconcile.js";
@@ -64,7 +66,13 @@ import { SessionActorQueue } from "./session-actor-queue.js";
 /** Coordinates ACP session metadata, runtime handles, per-session queues, and turn execution. */
 export class AcpSessionManager {
   private readonly actorQueue = new SessionActorQueue();
-  private readonly runtimeHandles = new ManagerRuntimeHandleCache();
+  private readonly actorOperationScope = new AsyncLocalStorage<{
+    actorKey: string;
+    generation: number;
+  }>();
+  private readonly runtimeHandles = new ManagerRuntimeHandleCache((actorKey) =>
+    this.isActorOperationCurrent(actorKey),
+  );
   private readonly activeTurnBySession = new Map<string, ActiveTurnState>();
   private readonly turnLatencyStats: TurnLatencyStats = {
     completed: 0,
@@ -313,6 +321,7 @@ export class AcpSessionManager {
           recordTurnCompletion: this.recordTurnCompletion.bind(this),
           reconcileRuntimeSessionIdentifiers: this.reconcileRuntimeSessionIdentifiers.bind(this),
           writeSessionMeta: this.writeSessionMeta.bind(this),
+          assertOperationCurrent: () => this.assertActorOperationCurrent(sessionKey),
         }),
       input.signal,
     );
@@ -382,8 +391,14 @@ export class AcpSessionManager {
     }
     const discardReason = params.reason ?? "force-discard";
     const actorKey = normalizeActorKey(sessionKey);
+    // Split the actor generation before detaching the handle. New work then
+    // gets an independent promise tail, while stale operations are fenced from
+    // mutating the replacement generation if they complete later.
+    this.actorQueue.retire(actorKey);
+    clearAcpTurnActive(sessionKey);
     const activeTurn = this.activeTurnBySession.get(actorKey);
     if (activeTurn) {
+      activeTurn.onDiscard?.();
       activeTurn.abortController.abort();
       // Drop bookkeeping immediately so the next turn cannot observe a stale
       // active-turn entry while the best-effort cancel may still hang.
@@ -412,7 +427,9 @@ export class AcpSessionManager {
     sessionKey: string;
     meta: SessionAcpMeta;
   }): Promise<{ runtime: AcpRuntime; handle: AcpRuntimeHandle; meta: SessionAcpMeta }> {
-    return await ensureManagerRuntimeHandle({
+    const actorKey = normalizeActorKey(params.sessionKey);
+    this.assertActorOperationCurrent(actorKey);
+    const ensured = await ensureManagerRuntimeHandle({
       ...params,
       deps: this.deps,
       runtimeHandles: this.runtimeHandles,
@@ -420,6 +437,20 @@ export class AcpSessionManager {
         this.enforceConcurrentSessionLimit(limitParams),
       writeSessionMeta: async (writeParams) => await this.writeSessionMeta(writeParams),
     });
+    if (!this.isActorOperationCurrent(actorKey)) {
+      void ensured.runtime
+        .close({
+          handle: ensured.handle,
+          reason: "stale-actor-generation",
+        })
+        .catch((error) => {
+          logVerbose(
+            `acp-manager: stale generation close failed for ${params.sessionKey}: ${String(error)}`,
+          );
+        });
+      throw this.createStaleActorOperationError();
+    }
+    return ensured;
   }
 
   private runtimeOptionCommandServices(): RuntimeOptionCommandServices {
@@ -574,11 +605,16 @@ export class AcpSessionManager {
     skipMaintenance?: boolean;
     takeCacheOwnership?: boolean;
   }): Promise<SessionEntry | null> {
+    const actorKey = normalizeActorKey(params.sessionKey);
+    if (!this.isActorOperationCurrent(actorKey)) {
+      return null;
+    }
     try {
       return await this.deps.upsertSessionMeta({
         cfg: params.cfg,
         sessionKey: params.sessionKey,
-        mutate: params.mutate,
+        mutate: (current, entry) =>
+          this.isActorOperationCurrent(actorKey) ? params.mutate(current, entry) : current,
         ...(params.skipMaintenance === true ? { skipMaintenance: true } : {}),
         ...(params.takeCacheOwnership === true ? { takeCacheOwnership: true } : {}),
       });
@@ -602,10 +638,20 @@ export class AcpSessionManager {
     this.throwIfAborted(signal);
 
     let actorStarted = false;
-    const queued = this.actorQueue.run(actorKey, async () => {
+    const queued = this.actorQueue.run(actorKey, async (context) => {
       actorStarted = true;
       this.throwIfAborted(signal);
-      return await op();
+      if (context.isStale()) {
+        throw this.createStaleActorOperationError();
+      }
+      return await this.actorOperationScope.run(
+        { actorKey, generation: context.generation },
+        async () => {
+          const value = await op();
+          this.assertActorOperationCurrent(actorKey);
+          return value;
+        },
+      );
     });
     if (!signal) {
       return await queued;
@@ -656,5 +702,27 @@ export class AcpSessionManager {
       return;
     }
     throw new AcpRuntimeError("ACP_TURN_FAILED", "ACP operation aborted.");
+  }
+
+  private isActorOperationCurrent(actorKey: string): boolean {
+    const operation = this.actorOperationScope.getStore();
+    return (
+      !operation ||
+      operation.actorKey !== actorKey ||
+      this.actorQueue.isCurrent(actorKey, operation.generation)
+    );
+  }
+
+  private assertActorOperationCurrent(actorKey: string): void {
+    if (!this.isActorOperationCurrent(actorKey)) {
+      throw this.createStaleActorOperationError();
+    }
+  }
+
+  private createStaleActorOperationError(): AcpRuntimeError {
+    return new AcpRuntimeError(
+      "ACP_TURN_FAILED",
+      "ACP operation was superseded by session reset.",
+    );
   }
 }
