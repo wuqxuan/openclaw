@@ -307,6 +307,53 @@ describe("fetchMinimaxUsage", () => {
         windows: [{ label: "4h", usedPercent: 25, resetAt: 1_774_195_200_000 }],
       },
     },
+    {
+      name: "accepts live model_remains general entry with remaining-percent fields and zero totals",
+      payload: {
+        model_remains: [
+          {
+            start_time: 1_784_386_800_000,
+            end_time: 1_784_404_800_000,
+            remains_time: 4_878_202,
+            current_interval_total_count: 0,
+            current_interval_usage_count: 0,
+            model_name: "general",
+            current_weekly_total_count: 0,
+            current_weekly_usage_count: 0,
+            weekly_start_time: 1_783_900_800_000,
+            weekly_end_time: 1_784_505_600_000,
+            weekly_remains_time: 105_678_202,
+            current_interval_status: 1,
+            current_interval_remaining_percent: 97,
+            current_weekly_status: 1,
+            current_weekly_remaining_percent: 77,
+          },
+          {
+            start_time: 1_784_332_800_000,
+            end_time: 1_784_419_200_000,
+            remains_time: 19_278_202,
+            current_interval_total_count: 0,
+            current_interval_usage_count: 0,
+            model_name: "video",
+            current_weekly_total_count: 0,
+            current_weekly_usage_count: 0,
+            weekly_start_time: 1_783_900_800_000,
+            weekly_end_time: 1_784_505_600_000,
+            weekly_remains_time: 105_678_202,
+            current_interval_status: 3,
+            current_interval_remaining_percent: 100,
+            current_weekly_status: 3,
+            current_weekly_remaining_percent: 100,
+          },
+        ],
+        base_resp: { status_code: 0, status_msg: "success" },
+      },
+      expected: {
+        plan: "Coding Plan · general",
+        // 100 - 97 interval remaining percent; window from start_time/end_time (5h)
+        windows: [{ label: "5h", usedPercent: 3, resetAt: 1_784_404_800_000 }],
+      },
+    },
   ])("$name", async ({ payload, expected }) => {
     await expectMinimaxUsageResult({ payload, expected });
   });

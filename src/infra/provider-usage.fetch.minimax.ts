@@ -66,6 +66,25 @@ const PERCENT_KEYS = [
 // and invert to get usedPercent. Count-based fromCounts always takes priority.
 const REMAINING_PERCENT_KEYS = ["usage_percent", "usagePercent"] as const;
 
+// Live coding-plan payloads report remaining quota under interval/weekly keys
+// (e.g. current_interval_remaining_percent) instead of usage_percent.
+// Prefer interval remaining percent when both are present.
+const INTERVAL_REMAINING_PERCENT_KEYS = [
+  "current_interval_remaining_percent",
+  "currentIntervalRemainingPercent",
+] as const;
+
+const WEEKLY_REMAINING_PERCENT_KEYS = [
+  "current_weekly_remaining_percent",
+  "currentWeeklyRemainingPercent",
+] as const;
+
+const ALL_REMAINING_PERCENT_KEYS = [
+  ...REMAINING_PERCENT_KEYS,
+  ...INTERVAL_REMAINING_PERCENT_KEYS,
+  ...WEEKLY_REMAINING_PERCENT_KEYS,
+] as const;
+
 const USED_KEYS = [
   "used",
   "usage",
@@ -207,7 +226,7 @@ function hasAny(record: Record<string, unknown>, keys: readonly string[]): boole
 
 function scoreUsageRecord(record: Record<string, unknown>): number {
   let score = 0;
-  if (hasAny(record, PERCENT_KEYS)) {
+  if (hasAny(record, PERCENT_KEYS) || hasAny(record, ALL_REMAINING_PERCENT_KEYS)) {
     score += 4;
   }
   if (hasAny(record, TOTAL_KEYS)) {
@@ -326,9 +345,13 @@ function deriveUsedPercent(payload: Record<string, unknown>): number | null {
     return clampPercent(percentRaw <= 1 ? percentRaw * 100 : percentRaw);
   }
 
-  // usage_percent / usagePercent in MiniMax's API represents remaining quota,
-  // not consumed quota. Invert to get usedPercent.
-  const remainingPercentRaw = pickNumber(payload, REMAINING_PERCENT_KEYS);
+  // Remaining-percent fields (legacy usage_percent and live interval/weekly keys)
+  // report remaining quota, not consumed quota. Invert to get usedPercent.
+  // Prefer interval remaining percent, then weekly, then legacy usage_percent.
+  const remainingPercentRaw =
+    pickNumber(payload, INTERVAL_REMAINING_PERCENT_KEYS) ??
+    pickNumber(payload, WEEKLY_REMAINING_PERCENT_KEYS) ??
+    pickNumber(payload, REMAINING_PERCENT_KEYS);
   if (remainingPercentRaw !== undefined) {
     const remainingNormalized = clampPercent(
       remainingPercentRaw <= 1 ? remainingPercentRaw * 100 : remainingPercentRaw,
@@ -339,9 +362,15 @@ function deriveUsedPercent(payload: Record<string, unknown>): number | null {
   return null;
 }
 
+function hasRecognizedRemainingPercent(record: Record<string, unknown>): boolean {
+  return pickNumber(record, ALL_REMAINING_PERCENT_KEYS) !== undefined;
+}
+
 // Prefer the entry whose model_name matches a chat/text model (e.g. "MiniMax-M*")
 // and that has a non-zero current_interval_total_count.  Models with total_count === 0
 // (speech, video, image) are not relevant to the coding-plan budget.
+// Live payloads often use model_name "general" with zero totals and remaining-percent
+// fields instead of MiniMax-M* names and positive counts.
 function pickChatModelRemains(modelRemains: unknown[]): Record<string, unknown> | undefined {
   const records = modelRemains.filter(isRecord);
   if (records.length === 0) {
@@ -362,10 +391,29 @@ function pickChatModelRemains(modelRemains: unknown[]): Record<string, unknown> 
     return chatRecord;
   }
 
-  return records.find((r) => {
+  // Current live API: model_name "general" (or MiniMax-M* without totals) plus
+  // current_*_remaining_percent. Prefer chat/general over video/speech/image.
+  const generalWithRemainingPercent = records.find((r) => {
+    const name = typeof r.model_name === "string" ? r.model_name : "";
+    const normalized = normalizeLowercaseStringOrEmpty(name);
+    const isChatLike =
+      normalized === "general" || normalized === "" || normalized.startsWith("minimax-m");
+    return isChatLike && hasRecognizedRemainingPercent(r);
+  });
+  if (generalWithRemainingPercent) {
+    return generalWithRemainingPercent;
+  }
+
+  const nonzeroTotal = records.find((r) => {
     const total = parseFiniteNumber(r.current_interval_total_count);
     return total !== undefined && total > 0;
   });
+  if (nonzeroTotal) {
+    return nonzeroTotal;
+  }
+
+  // Last resort: any record that carries a recognized remaining-percent field.
+  return records.find((r) => hasRecognizedRemainingPercent(r));
 }
 
 function resolveMinimaxUsageUrl(baseUrl?: string): string {
