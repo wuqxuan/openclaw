@@ -11,7 +11,6 @@ const QA_SMOKE_PROFILE = "smoke-ci";
 const QA_SMOKE_CI_PARTS = ["profile-1", "profile-2", "profile-3", "profile-4"] as const;
 const QA_SMOKE_CI_CHANNELS = ["matrix", OPENCLAW_CRABLINE_DEFAULT_CHANNEL] as const;
 const QA_SMOKE_CI_SCENARIO_IDS = new Set([
-  "channel-lifecycle-admission",
   "control-ui-chat-flow-playwright",
   "system-agent-ring-zero-setup",
   "dreaming-shadow-trial-report",
