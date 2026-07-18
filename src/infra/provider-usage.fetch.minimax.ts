@@ -358,9 +358,7 @@ function deriveUsedPercent(payload: Record<string, unknown>): number | null {
   const legacyRemainingPercentRaw = pickNumber(payload, REMAINING_PERCENT_KEYS);
   if (legacyRemainingPercentRaw !== undefined) {
     const remainingNormalized = clampPercent(
-      legacyRemainingPercentRaw <= 1
-        ? legacyRemainingPercentRaw * 100
-        : legacyRemainingPercentRaw,
+      legacyRemainingPercentRaw <= 1 ? legacyRemainingPercentRaw * 100 : legacyRemainingPercentRaw,
     );
     return clampPercent(100 - remainingNormalized);
   }
