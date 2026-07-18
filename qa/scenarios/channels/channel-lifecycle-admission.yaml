@@ -1,0 +1,163 @@
+title: Channel lifecycle request-admission boundary
+
+scenario:
+  id: channel-lifecycle-admission
+  surface: channels
+  coverage:
+    primary:
+      - gateway.channel-apis
+    secondary:
+      - gateway.channel-readiness
+      - runtime.gateway-restart
+  objective: Verify a channel account started by a short-lived Gateway request keeps accepting later work without bypassing process-global suspension admission.
+  successCriteria:
+    - A qa-channel account started through channels.start accepts inbound work after that RPC returns.
+    - A prepared Gateway suspension rejects ordinary channel RPC work.
+    - Resuming the suspension restores channel delivery.
+  docsRefs:
+    - docs/channels/qa-channel.md
+    - docs/gateway/external-apps.md
+    - docs/gateway/protocol.md
+  codeRefs:
+    - src/gateway/server-channels.ts
+    - src/process/gateway-work-admission.ts
+    - extensions/qa-channel/src/gateway.ts
+  execution:
+    kind: flow
+    channel: qa-channel
+    suiteIsolation: isolated
+    isolationReason: The scenario stops and restarts the channel account and temporarily prepares process-global Gateway suspension.
+    summary: Start the real qa-channel plugin through a Gateway RPC, prove post-request delivery, then prove suspension still refuses work and resumes cleanly.
+    config:
+      channelId: qa-channel
+      accountId: default
+      conversationId: qa-lifecycle-admission
+      firstMarker: QA-CHANNEL-LIFECYCLE-AFTER-RPC-OK
+      resumedMarker: QA-CHANNEL-LIFECYCLE-AFTER-RESUME-OK
+
+flow:
+  steps:
+    - name: accepts channel work after the starting RPC root is released
+      actions:
+        - call: waitForGatewayHealthy
+          args: [{ ref: env }, 60000]
+        - call: waitForTransportReady
+          args: [{ ref: env }, 60000]
+        - call: env.gateway.call
+          saveAs: stopped
+          args:
+            - channels.stop
+            - channel: { ref: config.channelId }
+              accountId: { ref: config.accountId }
+            - timeoutMs: 15000
+        - call: env.gateway.call
+          saveAs: started
+          args:
+            - channels.start
+            - channel: { ref: config.channelId }
+              accountId: { ref: config.accountId }
+            - timeoutMs: 15000
+        - assert:
+            expr: "started.started === true"
+            message:
+              expr: "`channels.start did not report a running account: ${JSON.stringify(started)}`"
+        - call: sleep
+          args: [250]
+        - call: waitForTransportReady
+          args: [{ ref: env }, 60000]
+        - resetTransport: true
+        - sendInbound:
+            conversation:
+              id: { ref: config.conversationId }
+              kind: group
+            senderId: driver
+            senderName: QA Lifecycle Driver
+            text:
+              expr: "`Reply exactly: ${config.firstMarker}`"
+        - waitForOutbound:
+            conversation:
+              id: { ref: config.conversationId }
+              kind: group
+            textIncludes: { ref: config.firstMarker }
+            timeoutMs:
+              expr: liveTurnTimeoutMs(env, 60000)
+          saveAs: firstOutbound
+      detailsExpr: "({ stopped, started, firstOutbound: firstOutbound.text })"
+
+    - name: preserves process-global suspension refusal and resumes delivery
+      actions:
+        - set: suspension
+          value: null
+        - set: suspendedCallRejected
+          value: false
+        - set: suspendedCallError
+          value: ""
+        - set: suspensionRequestId
+          value:
+            expr: "`qa-channel-lifecycle-${randomUUID()}`"
+        - try:
+            actions:
+              - call: waitForCondition
+                saveAs: suspension
+                args:
+                  - lambda:
+                      async: true
+                      expr: "(async () => { const result = await env.gateway.call('gateway.suspend.prepare', { requestId: suspensionRequestId }, { timeoutMs: 15000 }); return result.status === 'ready' ? result : undefined; })()"
+                  - 30000
+                  - 250
+              - try:
+                  actions:
+                    - call: env.gateway.call
+                      args:
+                        - channels.status
+                        - probe: false
+                          timeoutMs: 2000
+                        - timeoutMs: 5000
+                  catchAs: suspendedError
+                  catch:
+                    - set: suspendedCallRejected
+                      value: true
+                    - set: suspendedCallError
+                      value:
+                        expr: formatErrorMessage(suspendedError)
+              - assert:
+                  expr: "suspendedCallRejected && /unavailable|suspend|not accepted/i.test(suspendedCallError)"
+                  message:
+                    expr: "`ordinary channel RPC was not rejected by suspension: rejected=${suspendedCallRejected} error=${suspendedCallError}`"
+            finally:
+              - if:
+                  expr: "Boolean(suspension?.suspensionId)"
+                  then:
+                    - call: env.gateway.call
+                      saveAs: resumed
+                      args:
+                        - gateway.suspend.resume
+                        - suspensionId:
+                            expr: suspension.suspensionId
+                        - timeoutMs: 15000
+        - assert:
+            expr: "resumed?.ok === true && resumed?.status === 'running'"
+            message:
+              expr: "`gateway did not resume cleanly: ${JSON.stringify(resumed)}`"
+        - call: waitForGatewayHealthy
+          args: [{ ref: env }, 60000]
+        - call: waitForTransportReady
+          args: [{ ref: env }, 60000]
+        - resetTransport: true
+        - sendInbound:
+            conversation:
+              id: { ref: config.conversationId }
+              kind: group
+            senderId: driver
+            senderName: QA Lifecycle Driver
+            text:
+              expr: "`Reply exactly: ${config.resumedMarker}`"
+        - waitForOutbound:
+            conversation:
+              id: { ref: config.conversationId }
+              kind: group
+            textIncludes: { ref: config.resumedMarker }
+            timeoutMs:
+              expr: liveTurnTimeoutMs(env, 60000)
+          saveAs: resumedOutbound
+      detailsExpr: "({ suspension, suspendedCallError, resumed, resumedOutbound: resumedOutbound.text })"
