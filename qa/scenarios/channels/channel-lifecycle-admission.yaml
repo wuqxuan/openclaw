@@ -3,6 +3,10 @@ title: Channel lifecycle request-admission boundary
 scenario:
   id: channel-lifecycle-admission
   surface: channels
+  # Admin HTTP is required for suspend prepare/resume: suite gateway.call opens a
+  # fresh WebSocket each time, and a prepared suspension rejects new handshakes.
+  plugins:
+    - admin-http-rpc
   coverage:
     primary:
       - gateway.channel-apis
@@ -18,10 +22,17 @@ scenario:
     - docs/channels/qa-channel.md
     - docs/gateway/external-apps.md
     - docs/gateway/protocol.md
+    - docs/plugins/admin-http-rpc.md
   codeRefs:
     - src/gateway/server-channels.ts
     - src/process/gateway-work-admission.ts
     - extensions/qa-channel/src/gateway.ts
+    - extensions/admin-http-rpc/src/methods.ts
+  gatewayConfigPatch:
+    plugins:
+      entries:
+        admin-http-rpc:
+          enabled: true
   execution:
     kind: flow
     channel: qa-channel
@@ -86,59 +97,24 @@ flow:
 
     - name: preserves process-global suspension refusal and resumes delivery
       actions:
-        - set: suspension
-          value: null
-        - set: suspendedCallRejected
-          value: false
-        - set: suspendedCallError
-          value: ""
         - set: suspensionRequestId
           value:
             expr: "`qa-channel-lifecycle-${randomUUID()}`"
-        - try:
-            actions:
-              - call: waitForCondition
-                saveAs: suspension
-                args:
-                  - lambda:
-                      async: true
-                      expr: "(async () => { const result = await env.gateway.call('gateway.suspend.prepare', { requestId: suspensionRequestId }, { timeoutMs: 15000 }); return result.status === 'ready' ? result : undefined; })()"
-                  - 30000
-                  - 250
-              - try:
-                  actions:
-                    - call: env.gateway.call
-                      args:
-                        - channels.status
-                        - probe: false
-                          timeoutMs: 2000
-                        - timeoutMs: 5000
-                  catchAs: suspendedError
-                  catch:
-                    - set: suspendedCallRejected
-                      value: true
-                    - set: suspendedCallError
-                      value:
-                        expr: formatErrorMessage(suspendedError)
-              - assert:
-                  expr: "suspendedCallRejected && /unavailable|suspend|not accepted/i.test(suspendedCallError)"
-                  message:
-                    expr: "`ordinary channel RPC was not rejected by suspension: rejected=${suspendedCallRejected} error=${suspendedCallError}`"
-            finally:
-              - if:
-                  expr: "Boolean(suspension?.suspensionId)"
-                  then:
-                    - call: env.gateway.call
-                      saveAs: resumed
-                      args:
-                        - gateway.suspend.resume
-                        - suspensionId:
-                            expr: suspension.suspensionId
-                        - timeoutMs: 15000
+        # Use Admin HTTP for the suspend lease: the suite's gateway.call opens a new
+        # WebSocket per RPC, and prepared suspension rejects new handshakes by design
+        # (docs/gateway/external-apps.md). Admin HTTP stays reachable during the lease.
+        - call: waitForCondition
+          saveAs: suspensionCycle
+          args:
+            - lambda:
+                async: true
+                expr: "(async () => { const token = env.gateway.runtimeEnv.OPENCLAW_GATEWAY_TOKEN; if (!token) { throw new Error('missing OPENCLAW_GATEWAY_TOKEN for admin HTTP suspend control'); } const url = `${env.gateway.baseUrl}/api/v1/admin/rpc`; const adminRpc = async (method, params = {}) => { const response = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ method, params }) }); const body = await response.json(); return { httpStatus: response.status, body }; }; const prepared = await adminRpc('gateway.suspend.prepare', { requestId: suspensionRequestId }); if (prepared.body?.ok !== true || prepared.body?.payload?.status !== 'ready') { return undefined; } const suspension = prepared.body.payload; let suspendedCallRejected = false; let suspendedCallError = ''; try { const refused = await adminRpc('channels.status', { probe: false, timeoutMs: 2000 }); const errorText = JSON.stringify(refused.body ?? refused); if (refused.body?.ok === false && /unavailable|suspend|not accepted/i.test(errorText)) { suspendedCallRejected = true; suspendedCallError = errorText; } else { suspendedCallError = errorText; } } catch (error) { suspendedCallRejected = true; suspendedCallError = String(error?.message ?? error); } if (!suspendedCallRejected || !/unavailable|suspend|not accepted/i.test(suspendedCallError)) { throw new Error(`ordinary channel RPC was not rejected by suspension: rejected=${suspendedCallRejected} error=${suspendedCallError}`); } let resumed; try { const resumeResponse = await adminRpc('gateway.suspend.resume', { suspensionId: suspension.suspensionId }); resumed = resumeResponse.body?.payload ?? resumeResponse.body; if (resumeResponse.body?.ok !== true || resumed?.ok !== true || resumed?.status !== 'running') { throw new Error(`gateway did not resume cleanly: ${JSON.stringify(resumeResponse)}`); } } catch (error) { throw new Error(`gateway.suspend.resume failed: ${String(error?.message ?? error)}`); } return { suspension, suspendedCallError, resumed }; })()"
+            - 45000
+            - 250
         - assert:
-            expr: "resumed?.ok === true && resumed?.status === 'running'"
+            expr: "Boolean(suspensionCycle?.suspension?.suspensionId) && Boolean(suspensionCycle?.resumed?.ok) && Boolean(suspensionCycle?.suspendedCallError)"
             message:
-              expr: "`gateway did not resume cleanly: ${JSON.stringify(resumed)}`"
+              expr: "`suspend cycle incomplete: ${JSON.stringify(suspensionCycle)}`"
         - call: waitForGatewayHealthy
           args: [{ ref: env }, 60000]
         - call: waitForTransportReady
@@ -160,4 +136,4 @@ flow:
             timeoutMs:
               expr: liveTurnTimeoutMs(env, 60000)
           saveAs: resumedOutbound
-      detailsExpr: "({ suspension, suspendedCallError, resumed, resumedOutbound: resumedOutbound.text })"
+      detailsExpr: "({ suspension: suspensionCycle?.suspension, suspendedCallError: suspensionCycle?.suspendedCallError, resumed: suspensionCycle?.resumed, resumedOutbound: resumedOutbound.text })"
