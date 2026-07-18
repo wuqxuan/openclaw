@@ -345,16 +345,22 @@ function deriveUsedPercent(payload: Record<string, unknown>): number | null {
     return clampPercent(percentRaw <= 1 ? percentRaw * 100 : percentRaw);
   }
 
-  // Remaining-percent fields (legacy usage_percent and live interval/weekly keys)
-  // report remaining quota, not consumed quota. Invert to get usedPercent.
-  // Prefer interval remaining percent, then weekly, then legacy usage_percent.
-  const remainingPercentRaw =
+  // Current interval/weekly fields are percentages on a 0-100 scale. Keep
+  // their contract separate from legacy usage_percent, which also appeared
+  // as a 0-1 ratio in older payloads.
+  const currentRemainingPercentRaw =
     pickNumber(payload, INTERVAL_REMAINING_PERCENT_KEYS) ??
-    pickNumber(payload, WEEKLY_REMAINING_PERCENT_KEYS) ??
-    pickNumber(payload, REMAINING_PERCENT_KEYS);
-  if (remainingPercentRaw !== undefined) {
+    pickNumber(payload, WEEKLY_REMAINING_PERCENT_KEYS);
+  if (currentRemainingPercentRaw !== undefined) {
+    return clampPercent(100 - clampPercent(currentRemainingPercentRaw));
+  }
+
+  const legacyRemainingPercentRaw = pickNumber(payload, REMAINING_PERCENT_KEYS);
+  if (legacyRemainingPercentRaw !== undefined) {
     const remainingNormalized = clampPercent(
-      remainingPercentRaw <= 1 ? remainingPercentRaw * 100 : remainingPercentRaw,
+      legacyRemainingPercentRaw <= 1
+        ? legacyRemainingPercentRaw * 100
+        : legacyRemainingPercentRaw,
     );
     return clampPercent(100 - remainingNormalized);
   }

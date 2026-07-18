@@ -220,6 +220,32 @@ describe("fetchMinimaxUsage", () => {
       },
     },
     {
+      name: "treats current interval remaining percent as a 0-100 percentage",
+      payload: {
+        data: {
+          current_interval_remaining_percent: 1,
+          plan_name: "Coding Plan",
+        },
+      },
+      expected: {
+        plan: "Coding Plan",
+        windows: [{ label: "5h", usedPercent: 99, resetAt: undefined }],
+      },
+    },
+    {
+      name: "falls back to weekly remaining percent on the same 0-100 scale",
+      payload: {
+        data: {
+          current_weekly_remaining_percent: 1,
+          plan_name: "Coding Plan",
+        },
+      },
+      expected: {
+        plan: "Coding Plan",
+        windows: [{ label: "5h", usedPercent: 99, resetAt: undefined }],
+      },
+    },
+    {
       name: "falls back to payload-level reset and plan when nested usage records omit them",
       payload: {
         data: {
