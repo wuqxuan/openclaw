@@ -803,6 +803,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                   if (store.aborts.get(id) === abort) {
                     store.aborts.delete(id);
                   }
+                  // The settled task may have left background work racing on this
+                  // signal. Abort before the replacement starts so two account
+                  // instances can never share a live lifetime.
+                  abort.abort();
                   try {
                     await startChannelInternal(channelId, id, {
                       preserveManualStop: true,
