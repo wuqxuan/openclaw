@@ -841,16 +841,6 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                   restartPending: true,
                   reconnectAttempts: restart.attempts,
                 });
-                if (store.tasks.get(id) === trackedPromise) {
-                  store.tasks.delete(id);
-                }
-                if (store.aborts.get(id) === abort) {
-                  store.aborts.delete(id);
-                }
-                // The settled task may have left background work racing on this
-                // signal. Abort before the replacement starts so two account
-                // instances can never share a live lifetime.
-                abort.abort();
                 try {
                   await sleepWithAbort(retry.delayMs, retry.signal);
                   if (manuallyStopped.has(rKey)) {
@@ -862,8 +852,8 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                   if (store.aborts.get(id) === abort) {
                     store.aborts.delete(id);
                   }
-                  // See the timed-out-stop restart above: never start the crash
-                  // replacement while the predecessor's signal is unaborted.
+                  // The retry signal includes abort.signal, so end the predecessor
+                  // only after backoff completes, immediately before replacement.
                   abort.abort();
                   await startChannelInternal(channelId, id, {
                     preserveRestartAttempts: true,
