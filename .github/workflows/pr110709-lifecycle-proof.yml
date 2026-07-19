@@ -1,15 +1,11 @@
 # Temporary secretless exact-head proof workflow.
 name: PR 110709 lifecycle runtime proof
 
-run-name: PR 110709 lifecycle proof ${{ inputs.target_sha }}
+run-name: PR 110709 lifecycle proof 9a11b54c7c19
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_sha:
-        description: Exact full SHA to test
-        required: true
-        type: string
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -26,12 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: ${{ inputs.target_sha }}
+          ref: 9a11b54c7c1981702d076e3d07c45b918b5c34b1
           persist-credentials: false
       - name: Verify exact head
-        env:
-          EXPECTED_SHA: ${{ inputs.target_sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: test "$(git rev-parse HEAD)" = "9a11b54c7c1981702d076e3d07c45b918b5c34b1"
       - uses: ./.github/actions/setup-node-env
         with:
           node-version: 24.x
@@ -47,7 +41,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr110709-lifecycle-proof-${{ inputs.target_sha }}
+          name: pr110709-lifecycle-proof-9a11b54c7c1981702d076e3d07c45b918b5c34b1
           path: .artifacts/qa-e2e/channel-lifecycle-admission-exact-head
           retention-days: 30
           if-no-files-found: warn
