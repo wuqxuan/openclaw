@@ -7,12 +7,13 @@ import type {
   PluginStateKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { runDreamingSweepPhases } from "./dreaming-phases.js";
 import {
   configureMemoryCoreDreamingState,
   DREAMING_DAILY_INGESTION_NAMESPACE,
   DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+  DREAMING_WORKSPACE_STATE_MAX_ENTRIES,
   readMemoryCoreWorkspaceEntries,
   writeMemoryCoreWorkspaceEntries,
 } from "./dreaming-state.js";
@@ -63,16 +64,27 @@ function wrapStoreWithWriteCounts<T>(
   };
 }
 
-beforeAll(() => {
+function configureCountedDreamingState(params?: {
+  maxEntriesByNamespace?: Readonly<Record<string, number>>;
+}): void {
   configureMemoryCoreDreamingState(<T>(options: OpenKeyedStoreOptions) =>
     wrapStoreWithWriteCounts(
       createPluginStateKeyedStoreForTests<T>(MEMORY_CORE_PLUGIN_ID, {
         ...options,
+        // Capacity tests override maxEntries for a dedicated namespace so
+        // eviction can be proven without writing
+        // DREAMING_WORKSPACE_STATE_MAX_ENTRIES rows or reopening production
+        // namespaces with a conflicting limit signature.
+        maxEntries: params?.maxEntriesByNamespace?.[options.namespace] ?? options.maxEntries,
         env: process.env,
       }),
       options.namespace,
     ),
   );
+}
+
+beforeAll(() => {
+  configureCountedDreamingState();
 });
 
 afterAll(() => {
@@ -292,5 +304,80 @@ describe("writeMemoryCoreWorkspaceEntries", () => {
       workspaceDir: workspaceB,
     });
     expect(storedB).toEqual([{ key: "b.txt", value: { path: "b.txt", mtime: 2 } }]);
+  });
+
+  it("at namespace capacity, skips unchanged rows and lets oldest created_at rows evict", async () => {
+    // Production opens at DREAMING_WORKSPACE_STATE_MAX_ENTRIES (50_000). This
+    // test uses a small cap on a dedicated namespace so the same skip +
+    // created_at eviction policy is proven without writing tens of thousands
+    // of rows or reopening a production namespace with a different limit.
+    expect(DREAMING_WORKSPACE_STATE_MAX_ENTRIES).toBe(50_000);
+    const capacity = 3;
+    const capacityNamespace = "dreaming-workspace-capacity-retention";
+    configureCountedDreamingState({
+      maxEntriesByNamespace: { [capacityNamespace]: capacity },
+    });
+    vi.useFakeTimers();
+    try {
+      const workspaceDir = await createWorkspace();
+      const oldest = { key: "oldest.txt", value: { path: "oldest.txt", mtime: 1 } };
+      const mid = { key: "mid.txt", value: { path: "mid.txt", mtime: 2 } };
+      const newest = { key: "newest.txt", value: { path: "newest.txt", mtime: 3 } };
+      const incoming = { key: "incoming.txt", value: { path: "incoming.txt", mtime: 4 } };
+
+      vi.setSystemTime(1_000);
+      await writeMemoryCoreWorkspaceEntries({
+        namespace: capacityNamespace,
+        workspaceDir,
+        entries: [oldest],
+      });
+      vi.setSystemTime(2_000);
+      await writeMemoryCoreWorkspaceEntries({
+        namespace: capacityNamespace,
+        workspaceDir,
+        entries: [oldest, mid],
+      });
+      vi.setSystemTime(3_000);
+      await writeMemoryCoreWorkspaceEntries({
+        namespace: capacityNamespace,
+        workspaceDir,
+        entries: [oldest, mid, newest],
+      });
+
+      resetWriteCounts();
+      vi.setSystemTime(4_000);
+      // Unchanged pass must not refresh created_at via register().
+      await writeMemoryCoreWorkspaceEntries({
+        namespace: capacityNamespace,
+        workspaceDir,
+        entries: [oldest, mid, newest],
+      });
+      expect(writeCounts.register).toBe(0);
+      expect(writeCounts.delete).toBe(0);
+
+      resetWriteCounts();
+      vi.setSystemTime(5_000);
+      // One new row at capacity: only the new key registers; the oldest
+      // unchanged row keeps its earlier created_at and is the eviction victim.
+      await writeMemoryCoreWorkspaceEntries({
+        namespace: capacityNamespace,
+        workspaceDir,
+        entries: [oldest, mid, newest, incoming],
+      });
+      expect(writeCounts.register).toBe(1);
+
+      const stored = await readMemoryCoreWorkspaceEntries({
+        namespace: capacityNamespace,
+        workspaceDir,
+      });
+      expect(stored).toHaveLength(capacity);
+      expect(stored.map((row) => row.key).sort()).toEqual(
+        ["incoming.txt", "mid.txt", "newest.txt"].sort(),
+      );
+      expect(stored.some((row) => row.key === "oldest.txt")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      configureCountedDreamingState();
+    }
   });
 });
