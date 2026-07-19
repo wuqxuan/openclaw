@@ -1,0 +1,52 @@
+name: PR 110709 lifecycle runtime proof
+
+run-name: PR 110709 lifecycle proof ${{ inputs.target_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact full SHA to test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OPENCLAW_BUILD_PRIVATE_QA: "1"
+  OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
+
+jobs:
+  lifecycle-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+      - name: Verify exact head
+        env:
+          EXPECTED_SHA: ${{ inputs.target_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: ./.github/actions/setup-node-env
+        with:
+          node-version: 24.x
+          install-bun: "true"
+      - name: Run isolated lifecycle scenario
+        run: |
+          pnpm openclaw qa suite \
+            --provider-mode mock-openai \
+            --scenario channel-lifecycle-admission \
+            --channel-driver qa-channel \
+            --output-dir .artifacts/qa-e2e/channel-lifecycle-admission-exact-head
+      - name: Upload redacted evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr110709-lifecycle-proof-${{ inputs.target_sha }}
+          path: .artifacts/qa-e2e/channel-lifecycle-admission-exact-head
+          retention-days: 30
+          if-no-files-found: warn
