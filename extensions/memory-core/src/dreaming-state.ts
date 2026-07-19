@@ -134,6 +134,9 @@ export async function writeMemoryCoreWorkspaceEntries(
       continue;
     }
     await store.register(stateKey, nextValue);
+    // Keep comparisons in write order so duplicate logical keys preserve the
+    // keyed store's sequential last-write-wins behavior.
+    existingByKey.set(stateKey, nextValue);
   }
   for (const stateKey of existingByKey.keys()) {
     if (!replacementKeys.has(stateKey)) {

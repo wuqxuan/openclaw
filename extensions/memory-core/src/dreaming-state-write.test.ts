@@ -144,6 +144,34 @@ describe("writeMemoryCoreWorkspaceEntries", () => {
     });
   });
 
+  it("preserves last-write-wins when duplicate keys return to the original value", async () => {
+    const workspaceDir = await createWorkspace();
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir,
+      entries: [{ key: "same.txt", value: { path: "same.txt", mtime: 1 } }],
+    });
+
+    resetWriteCounts();
+    await writeMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir,
+      entries: [
+        { key: "same.txt", value: { path: "same.txt", mtime: 2 } },
+        { key: "same.txt", value: { path: "same.txt", mtime: 1 } },
+      ],
+    });
+    expect(writeCounts.register).toBe(2);
+
+    const stored = await readMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+      workspaceDir,
+    });
+    expect(stored).toEqual([
+      { key: "same.txt", value: { path: "same.txt", mtime: 1 } },
+    ]);
+  });
+
   it("deletes only rows absent from the desired set", async () => {
     const workspaceDir = await createWorkspace();
     await writeMemoryCoreWorkspaceEntries({
