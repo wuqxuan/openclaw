@@ -396,13 +396,18 @@ export function cleanupFinishedSessionsForScopes(scopeKeys: Iterable<string | un
 }
 
 /** Test-only reset for in-memory registry state and retention timers. */
-export function resetProcessRegistryForTests() {
+function resetProcessRegistryForTests() {
   runningSessions.clear();
   finishedSessions.clear();
   activeBackgroundExecSessionIds.clear();
   maxFinishedSessions = DEFAULT_MAX_FINISHED_SESSIONS;
   maxFinishedTotalChars = DEFAULT_MAX_FINISHED_TOTAL_CHARS;
   stopSweeper();
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.bashProcessRegistryTestApi")] =
+    { resetProcessRegistryForTests };
 }
 
 /** Overrides finished-session retention TTL, clamped to supported bounds. */

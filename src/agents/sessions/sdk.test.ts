@@ -4,10 +4,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "opencl
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Model, SimpleStreamOptions } from "../../llm/types.js";
-import {
-  createUserTurnTranscriptRecorder,
-  takeRuntimeUserTurnTranscriptContext,
-} from "../../sessions/user-turn-transcript.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createTestUserTurnTranscriptTarget } from "../../sessions/user-turn-transcript.test-support.js";
 
 const thinkingMocks = vi.hoisted(() => ({
@@ -23,6 +20,7 @@ vi.mock("../../auto-reply/thinking.js", () => ({
 vi.mock("../../llm/stream.js", () => ({
   streamSimple: streamMocks.streamSimple,
 }));
+import { takeRuntimeUserTurnTranscriptContext } from "../../sessions/user-turn-transcript-runtime-context.js";
 import { AuthStorage } from "./auth-storage.js";
 import { createExtensionRuntime } from "./extensions/loader.js";
 import type { LoadExtensionsResult, ToolDefinition } from "./extensions/types.js";
@@ -727,7 +725,7 @@ describe("createAgentSession thinking level defaults", () => {
 });
 
 describe("AgentSession retry behavior", () => {
-  async function createRetrySession() {
+  async function createRetrySession(retry?: { baseDelayMs: number; maxRetries: number }) {
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(testModel.provider, "test-api-key");
     return await createAgentSession({
@@ -735,7 +733,7 @@ describe("AgentSession retry behavior", () => {
       resourceLoader: createEmptyResourceLoader(),
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.inMemory({
-        retry: { baseDelayMs: 0, maxRetries: 1 },
+        retry: retry ?? { baseDelayMs: 0, maxRetries: 1 },
       }),
       modelRegistry: ModelRegistry.inMemory(authStorage),
     });
@@ -777,5 +775,44 @@ describe("AgentSession retry behavior", () => {
     expect(streamMocks.streamSimple.mock.calls.length).toBeGreaterThan(1);
     expect(transientEvents).toContain("auto_retry_start");
     expect(transientEvents).toContain("auto_retry_end");
+  });
+
+  it("uses a short server Retry-After as the auto-retry delay floor", async () => {
+    vi.useFakeTimers();
+    try {
+      streamMocks.streamSimple.mockReset();
+      streamMocks.streamSimple
+        .mockImplementationOnce(() =>
+          createAssistantResultStream(
+            createAssistantError("HTTP 429: rate limited; Retry-After: 30 seconds"),
+          ),
+        )
+        .mockImplementationOnce(() =>
+          createAssistantResultStream({
+            ...createAssistantError(""),
+            content: [{ type: "text", text: "recovered" }],
+            stopReason: "stop",
+            errorMessage: undefined,
+          }),
+        );
+      const { session } = await createRetrySession({ baseDelayMs: 2_000, maxRetries: 1 });
+      const retryDelays: number[] = [];
+      session.subscribe((event) => {
+        if (event.type === "auto_retry_start") {
+          retryDelays.push(event.delayMs);
+        }
+      });
+
+      const promptPromise = session.prompt("test Retry-After");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(retryDelays).toEqual([30_000]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await promptPromise;
+      expect(streamMocks.streamSimple).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -18,12 +18,12 @@ import {
   listRunningSessions,
   markBackgrounded,
   markExited,
-  resetProcessRegistryForTests,
   setFinishedSessionRetentionForTests,
   setJobTtlMs,
   tail,
 } from "./bash-process-registry.js";
 import { createProcessSessionFixture } from "./bash-process-registry.test-helpers.js";
+import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 
 const randomMocks = vi.hoisted(() => ({
   generateSecureInt: vi.fn(() => 0),
