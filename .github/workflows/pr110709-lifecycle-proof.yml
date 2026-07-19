@@ -1,4 +1,4 @@
-# Temporary secretless exact-head proof workflow.
+# Temporary secretless exact-head proof workflow; git-pushed to trigger this run.
 name: PR 110709 lifecycle runtime proof
 
 run-name: PR 110709 lifecycle proof 9a11b54c7c19
