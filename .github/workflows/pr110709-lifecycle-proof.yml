@@ -1,3 +1,4 @@
+# Temporary secretless exact-head proof workflow.
 name: PR 110709 lifecycle runtime proof
 
 run-name: PR 110709 lifecycle proof ${{ inputs.target_sha }}
