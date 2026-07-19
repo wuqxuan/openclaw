@@ -234,9 +234,7 @@ describe("writeMemoryCoreWorkspaceEntries", () => {
       namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
       workspaceDir,
     });
-    expect(stored).toEqual([
-      { key: "same.txt", value: { path: "same.txt", mtime: 1 } },
-    ]);
+    expect(stored).toEqual([{ key: "same.txt", value: { path: "same.txt", mtime: 1 } }]);
   });
 
   it("deletes only rows absent from the desired set", async () => {
