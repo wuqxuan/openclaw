@@ -8,8 +8,10 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { runDreamingSweepPhases } from "./dreaming-phases.js";
 import {
   configureMemoryCoreDreamingState,
+  DREAMING_DAILY_INGESTION_NAMESPACE,
   DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
   readMemoryCoreWorkspaceEntries,
   writeMemoryCoreWorkspaceEntries,
@@ -25,20 +27,37 @@ type WriteCounts = {
 };
 
 let writeCounts: WriteCounts = { register: 0, delete: 0 };
+const writeCountsByNamespace = new Map<string, WriteCounts>();
 
 function resetWriteCounts(): void {
   writeCounts = { register: 0, delete: 0 };
+  writeCountsByNamespace.clear();
 }
 
-function wrapStoreWithWriteCounts<T>(store: PluginStateKeyedStore<T>): PluginStateKeyedStore<T> {
+function incrementNamespaceWriteCount(namespace: string, operation: keyof WriteCounts): void {
+  const counts = writeCountsByNamespace.get(namespace) ?? { register: 0, delete: 0 };
+  counts[operation] += 1;
+  writeCountsByNamespace.set(namespace, counts);
+}
+
+function namespaceWriteCounts(namespace: string): WriteCounts {
+  return writeCountsByNamespace.get(namespace) ?? { register: 0, delete: 0 };
+}
+
+function wrapStoreWithWriteCounts<T>(
+  store: PluginStateKeyedStore<T>,
+  namespace: string,
+): PluginStateKeyedStore<T> {
   return {
     ...store,
     register: async (key, value, opts) => {
       writeCounts.register += 1;
+      incrementNamespaceWriteCount(namespace, "register");
       await store.register(key, value, opts);
     },
     delete: async (key) => {
       writeCounts.delete += 1;
+      incrementNamespaceWriteCount(namespace, "delete");
       return store.delete(key);
     },
   };
@@ -51,6 +70,7 @@ beforeAll(() => {
         ...options,
         env: process.env,
       }),
+      options.namespace,
     ),
   );
 });
@@ -76,6 +96,53 @@ async function createWorkspace(): Promise<string> {
 }
 
 describe("writeMemoryCoreWorkspaceEntries", () => {
+  it("writes only new daily state through the production light Dreaming sweep", async () => {
+    const workspaceDir = await createWorkspace();
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "2026-04-04.md"), "Alpha memory.\n", "utf-8");
+    await fs.writeFile(path.join(memoryDir, "2026-04-05.md"), "Beta memory.\n", "utf-8");
+    const pluginConfig = {
+      dreaming: {
+        enabled: true,
+        timezone: "UTC",
+        storage: { mode: "separate", separateReports: false },
+        phases: {
+          light: { enabled: true, limit: 20, lookbackDays: 7 },
+          rem: { enabled: false, limit: 0, lookbackDays: 7 },
+        },
+      },
+    };
+    const runSweep = () =>
+      runDreamingSweepPhases({
+        workspaceDir,
+        pluginConfig,
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        nowMs: Date.parse("2026-04-05T10:05:00.000Z"),
+      });
+
+    resetWriteCounts();
+    await runSweep();
+    expect(namespaceWriteCounts(DREAMING_DAILY_INGESTION_NAMESPACE)).toEqual({
+      register: 2,
+      delete: 0,
+    });
+
+    await fs.writeFile(path.join(memoryDir, "2026-04-03.md"), "Gamma memory.\n", "utf-8");
+    resetWriteCounts();
+    await runSweep();
+    expect(namespaceWriteCounts(DREAMING_DAILY_INGESTION_NAMESPACE)).toEqual({
+      register: 1,
+      delete: 0,
+    });
+
+    const stored = await readMemoryCoreWorkspaceEntries({
+      namespace: DREAMING_DAILY_INGESTION_NAMESPACE,
+      workspaceDir,
+    });
+    expect(stored).toHaveLength(3);
+  });
+
   it("writes all rows on first run, then skips unchanged rows on identical second run", async () => {
     const workspaceDir = await createWorkspace();
     const entries = [
